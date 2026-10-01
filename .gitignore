@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Entorno
+.env
+
+# Base de datos
+*.db
+*.sqlite3
+
+# Docker
+*.log
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/

@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dfsha
+      POSTGRES_PASSWORD: dfsha
+      POSTGRES_DB: dfsha
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  control_node:
+    build: ./control_node
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    volumes:
+      - ./control_node:/app
+
+  data_node_1:
+    build: ./data_node
+    env_file: .env
+    environment:
+      NODE_ID: DN1
+      STORAGE_ROOT: /data/dfsha
+    ports:
+      - "8001:8000"
+    volumes:
+      - dn1_data:/data/dfsha
+
+  data_node_2:
+    build: ./data_node
+    env_file: .env
+    environment:
+      NODE_ID: DN2
+      STORAGE_ROOT: /data/dfsha
+    ports:
+      - "8002:8000"
+    volumes:
+      - dn2_data:/data/dfsha
+
+  data_node_3:
+    build: ./data_node
+    env_file: .env
+    environment:
+      NODE_ID: DN3
+      STORAGE_ROOT: /data/dfsha
+    ports:
+      - "8003:8000"
+    volumes:
+      - dn3_data:/data/dfsha
+
+volumes:
+  postgres_data:
+  dn1_data:
+  dn2_data:
+  dn3_data:
