@@ -53,6 +53,15 @@ services:
     volumes:
       - dn3_data:/data/dfsha
 
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - control_node
+
 volumes:
   postgres_data:
   dn1_data:
