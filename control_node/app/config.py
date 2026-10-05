@@ -12,6 +12,48 @@ from functools import lru_cache
 from shared.constants import BYTES_PER_MEGABYTE
 
 
+@dataclass(frozen=True)
+class DataNodeConfig:
+    """Descripción de un DataNode esperado, leída de la configuración."""
+
+    node_id: str
+    host: str
+    port: int
+
+
+def _parse_datanodes(raw: str) -> tuple[DataNodeConfig, ...]:
+    """Convierte la variable DATANODES en una lista estructurada de nodos.
+
+    Formato esperado: "DN1:host1:8000,DN2:host2:8000". Cada entrada tiene la
+    forma node_id:host:puerto. Las entradas vacías se ignoran.
+    """
+    nodes: list[DataNodeConfig] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) != 3:
+            raise RuntimeError(
+                "Entrada inválida en DATANODES: "
+                f"{entry!r}. Formato esperado node_id:host:puerto."
+            )
+        node_id, host, port_raw = (part.strip() for part in parts)
+        if not node_id or not host:
+            raise RuntimeError(
+                f"Entrada inválida en DATANODES: {entry!r}. "
+                "El node_id y el host no pueden estar vacíos."
+            )
+        try:
+            port = int(port_raw)
+        except ValueError as error:
+            raise RuntimeError(
+                f"Puerto inválido en DATANODES para {node_id!r}: {port_raw!r}."
+            ) from error
+        nodes.append(DataNodeConfig(node_id=node_id, host=host, port=port))
+    return tuple(nodes)
+
+
 def _require(name: str) -> str:
     """Obtiene una variable de entorno obligatoria o falla con un mensaje claro."""
     value = os.getenv(name)
@@ -60,6 +102,9 @@ class Settings:
     temp_space_margin_percent: int
     storage_root: str
 
+    # DataNodes esperados por el ControlNode, leídos de la configuración.
+    datanodes: tuple[DataNodeConfig, ...]
+
     @property
     def block_size_bytes(self) -> int:
         """Tamaño de bloque expresado en bytes."""
@@ -86,4 +131,5 @@ def get_settings() -> Settings:
         datanode_failure_threshold=_get_int("DATANODE_FAILURE_THRESHOLD", 3),
         temp_space_margin_percent=_get_int("TEMP_SPACE_MARGIN_PERCENT", 10),
         storage_root=os.getenv("STORAGE_ROOT", "/data/dfsha"),
+        datanodes=_parse_datanodes(os.getenv("DATANODES", "")),
     )
