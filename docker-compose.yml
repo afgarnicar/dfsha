@@ -9,6 +9,13 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    # Verificación de salud: el ControlNode solo arranca cuando Postgres
+    # acepta conexiones, no solo cuando su contenedor existe.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dfsha -d dfsha"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   control_node:
     build: ./control_node
@@ -16,9 +23,13 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
       - ./control_node:/app
+      # Código compartido entre componentes, montado dentro del path de la app
+      # para que sea importable como paquete "shared".
+      - ./shared:/app/shared
 
   data_node_1:
     build: ./data_node
