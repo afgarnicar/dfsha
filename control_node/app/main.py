@@ -12,9 +12,11 @@ from fastapi import FastAPI
 
 from app.api.auth import router as auth_router
 from app.api.datanodes import router as datanodes_router
+from app.api.filesystem import router as filesystem_router
 from app.api.groups import router as groups_router
 from app.config import get_settings
 from app.db.session import SessionLocal, wait_for_database
+from app.services.bootstrap_service import BootstrapService
 from app.services.datanode_service import DataNodeRegistryService
 
 logging.basicConfig(level=logging.INFO)
@@ -25,10 +27,12 @@ async def lifespan(app: FastAPI):
     # Espera activa a la base de datos antes de servir peticiones.
     wait_for_database()
 
-    # Registra los DataNodes configurados (operación idempotente).
     settings = get_settings()
     session = SessionLocal()
     try:
+        # Garantiza el usuario de sistema y el directorio raíz (idempotente).
+        BootstrapService(session).run()
+        # Registra los DataNodes configurados (operación idempotente).
         DataNodeRegistryService(session).sync_from_config(settings.datanodes)
     finally:
         session.close()
@@ -42,6 +46,7 @@ app = FastAPI(title="DFSha ControlNode", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(datanodes_router)
 app.include_router(groups_router)
+app.include_router(filesystem_router)
 
 
 @app.get("/health")
