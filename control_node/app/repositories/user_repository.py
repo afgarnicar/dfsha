@@ -25,6 +25,11 @@ class UserRepository:
         """Devuelve el usuario con el id dado, o None si no existe."""
         return self._session.get(User, user_id)
 
+    def list_all(self) -> list[User]:
+        """Devuelve todos los usuarios, ordenados por nombre."""
+        statement = select(User).order_by(User.username)
+        return list(self._session.scalars(statement).all())
+
     def create(self, username: str, password_hash: str) -> User:
         """Crea un usuario nuevo y activo con el hash de contraseña dado."""
         user = User(username=username, password_hash=password_hash, is_active=True)
