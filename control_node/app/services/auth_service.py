@@ -9,6 +9,7 @@ from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.security.jwt import create_access_token
 from app.security.password import hash_password, verify_password
+from app.services.home_service import HomeDirectoryService
 from sqlalchemy.orm import Session
 
 
@@ -39,6 +40,9 @@ class AuthService:
         user = self._repository.create(username, hash_password(password))
         self._session.commit()
         self._session.refresh(user)
+
+        # Crea la carpeta personal del usuario recién registrado.
+        HomeDirectoryService(self._session).ensure_home_for(user)
         return user
 
     def authenticate(self, username: str, password: str) -> str:
