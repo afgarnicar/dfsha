@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.auth import router as auth_router
 from app.api.datanodes import router as datanodes_router
 from app.config import get_settings
 from app.db.session import SessionLocal, wait_for_database
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
 # Instancia principal de la aplicación del ControlNode.
 app = FastAPI(title="DFSha ControlNode", lifespan=lifespan)
 
+app.include_router(auth_router)
 app.include_router(datanodes_router)
 
 
