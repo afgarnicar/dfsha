@@ -35,7 +35,7 @@ class DataNodeRepository:
         """Crea un DataNode nuevo en estado OFFLINE.
 
         El nodo arranca OFFLINE porque todavía no se ha verificado su salud;
-        será el monitor de nodos (etapa posterior) quien lo marque ONLINE.
+        será el monitor de nodos quien lo marque ONLINE.
         """
         datanode = DataNode(
             name=name,
