@@ -2,11 +2,13 @@
 
 Al arrancar, espera a que PostgreSQL esté disponible y luego registra los
 DataNodes declarados en la configuración, de modo que el servicio no acepte
-peticiones hasta tener su estado inicial listo.
+peticiones hasta tener su estado inicial listo. Después lanza el monitor de
+DataNodes, que corre en segundo plano mientras el servicio esté activo.
 """
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
@@ -17,7 +19,9 @@ from app.api.groups import router as groups_router
 from app.config import get_settings
 from app.db.session import SessionLocal, wait_for_database
 from app.services.bootstrap_service import BootstrapService
+from app.services.datanode_health_client import DataNodeHealthClient
 from app.services.datanode_service import DataNodeRegistryService
+from app.services.node_monitor_service import NodeMonitorService
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,7 +41,21 @@ async def lifespan(app: FastAPI):
     finally:
         session.close()
 
+    # Arranca el monitor de DataNodes como tarea de fondo.
+    monitor = NodeMonitorService(
+        session_factory=SessionLocal,
+        health_client=DataNodeHealthClient(),
+        interval_seconds=settings.health_check_interval_seconds,
+        failure_threshold=settings.datanode_failure_threshold,
+    )
+    monitor_task = asyncio.create_task(monitor.run_forever())
+
     yield
+
+    # Al apagar el ControlNode se detiene el monitor de forma ordenada.
+    monitor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await monitor_task
 
 
 # Instancia principal de la aplicación del ControlNode.

@@ -7,6 +7,7 @@ separadas.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -52,4 +53,28 @@ class DataNodeRepository:
         """Actualiza el host y el puerto de un DataNode existente."""
         datanode.host = host
         datanode.port = port
+        return datanode
+
+    def get_by_id(self, datanode_id: int) -> DataNode | None:
+        """Devuelve el DataNode con el id dado, o None si no existe."""
+        return self._session.get(DataNode, datanode_id)
+
+    def update_health(
+        self,
+        datanode: DataNode,
+        status: NodeStatus,
+        failure_count: int,
+        checked_at: datetime,
+        free_space_bytes: int | None = None,
+    ) -> DataNode:
+        """Guarda el resultado de una verificación de salud del monitor de nodos.
+
+        El espacio libre solo se actualiza si el nodo lo reportó; si la
+        verificación falló, se conserva el último valor conocido.
+        """
+        datanode.status = status
+        datanode.failure_count = failure_count
+        datanode.last_check = checked_at
+        if free_space_bytes is not None:
+            datanode.free_space_bytes = free_space_bytes
         return datanode
