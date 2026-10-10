@@ -91,6 +91,9 @@ class Settings:
     jwt_expiration_seconds: int
     internal_api_key: str
 
+    # Clave simétrica para cifrar los bloques en reposo (formato Fernet).
+    encryption_key: str
+
     # Parámetros del sistema de archivos distribuido.
     block_size_mb: int
     replication_factor: int
@@ -122,6 +125,7 @@ def get_settings() -> Settings:
         jwt_secret=_require("JWT_SECRET"),
         jwt_expiration_seconds=_get_int("JWT_EXPIRATION", 3600),
         internal_api_key=_require("INTERNAL_API_KEY"),
+        encryption_key=_require("ENCRYPTION_KEY"),
         block_size_mb=_get_int("BLOCK_SIZE_MB", 64),
         replication_factor=_get_int("REPLICATION_FACTOR", 2),
         max_retries=_get_int("MAX_RETRIES", 3),
