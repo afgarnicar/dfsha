@@ -105,6 +105,11 @@ class Settings:
     temp_space_margin_percent: int
     storage_root: str
 
+    # Carpeta donde se reconstruyen temporalmente los archivos durante un GET.
+    temp_root: str
+    # Cada cuántos segundos se reintentan los borrados pendientes (rm).
+    cleanup_interval_seconds: int
+
     # DataNodes esperados por el ControlNode, leídos de la configuración.
     datanodes: tuple[DataNodeConfig, ...]
 
@@ -135,5 +140,7 @@ def get_settings() -> Settings:
         datanode_failure_threshold=_get_int("DATANODE_FAILURE_THRESHOLD", 3),
         temp_space_margin_percent=_get_int("TEMP_SPACE_MARGIN_PERCENT", 10),
         storage_root=os.getenv("STORAGE_ROOT", "/data/dfsha"),
+        temp_root=os.getenv("TEMP_ROOT", "/tmp/dfsha"),
+        cleanup_interval_seconds=_get_int("CLEANUP_INTERVAL_SECONDS", 30),
         datanodes=_parse_datanodes(os.getenv("DATANODES", "")),
     )

@@ -1,6 +1,7 @@
 """Repositorio de acceso a datos de bloques y sus ubicaciones."""
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.storage import Block, BlockLocation
 from shared.enums import BlockStatus, ReplicaRole
@@ -55,3 +56,28 @@ class BlockRepository:
     def mark_block_committed(self, block: Block) -> None:
         """Marca un bloque como COMMITTED (sus dos réplicas están almacenadas)."""
         block.status = BlockStatus.COMMITTED
+
+    def list_for_file_version(self, file_id: int, version: int) -> list[Block]:
+        """Bloques de una versión de un archivo, en orden, con sus réplicas y nodos."""
+        statement = (
+            select(Block)
+            .where(Block.file_id == file_id, Block.version == version)
+            .order_by(Block.block_index)
+            .options(selectinload(Block.locations).selectinload(BlockLocation.datanode))
+        )
+        return list(self._session.scalars(statement).all())
+
+    def list_all_for_file(self, file_id: int) -> list[Block]:
+        """Todos los bloques de un archivo (cualquier versión), con sus réplicas."""
+        statement = (
+            select(Block)
+            .where(Block.file_id == file_id)
+            .order_by(Block.version, Block.block_index)
+            .options(selectinload(Block.locations).selectinload(BlockLocation.datanode))
+        )
+        return list(self._session.scalars(statement).all())
+
+    def delete_location(self, location: BlockLocation) -> None:
+        """Quita una réplica de los metadatos (ya se borró del DataNode)."""
+        location.block.locations.remove(location)
+        self._session.delete(location)
