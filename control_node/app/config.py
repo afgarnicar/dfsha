@@ -109,6 +109,8 @@ class Settings:
     temp_root: str
     # Cada cuántos segundos se reintentan los borrados pendientes (rm).
     cleanup_interval_seconds: int
+    # Tiempo sin uso tras el cual vence un handle de lectura (open en modo READ).
+    handle_timeout_seconds: int
 
     # DataNodes esperados por el ControlNode, leídos de la configuración.
     datanodes: tuple[DataNodeConfig, ...]
@@ -142,5 +144,6 @@ def get_settings() -> Settings:
         storage_root=os.getenv("STORAGE_ROOT", "/data/dfsha"),
         temp_root=os.getenv("TEMP_ROOT", "/tmp/dfsha"),
         cleanup_interval_seconds=_get_int("CLEANUP_INTERVAL_SECONDS", 30),
+        handle_timeout_seconds=_get_int("HANDLE_TIMEOUT_SECONDS", 300),
         datanodes=_parse_datanodes(os.getenv("DATANODES", "")),
     )

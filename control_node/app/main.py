@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from app.api.auth import router as auth_router
 from app.api.datanodes import router as datanodes_router
+from app.api.file_sessions import router as file_sessions_router
 from app.api.files import router as files_router
 from app.api.filesystem import router as filesystem_router
 from app.api.groups import router as groups_router
@@ -77,6 +78,7 @@ app.include_router(datanodes_router)
 app.include_router(groups_router)
 app.include_router(filesystem_router)
 app.include_router(files_router)
+app.include_router(file_sessions_router)
 
 
 @app.get("/health")
