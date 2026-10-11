@@ -32,6 +32,11 @@ class Settings:
     # Carpeta donde el nodo guarda los bloques. Debe ser un volumen persistente.
     storage_root: str
 
+    # Credencial compartida para autenticar la comunicación interna entre nodos.
+    # Es distinta del JWT de los usuarios: protege los endpoints de bloques para
+    # que solo el ControlNode y otros DataNodes autorizados puedan usarlos.
+    internal_api_key: str
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -39,4 +44,5 @@ def get_settings() -> Settings:
     return Settings(
         node_id=_require("NODE_ID"),
         storage_root=os.getenv("STORAGE_ROOT", "/data/dfsha"),
+        internal_api_key=_require("INTERNAL_API_KEY"),
     )

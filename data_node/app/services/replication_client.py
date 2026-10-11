@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.config import get_settings
+from app.security import INTERNAL_API_KEY_HEADER
 from app.storage.block_store import BlockNotFoundError, BlockStore
 from app.storage.checksum import file_sha256
 
@@ -69,6 +71,7 @@ class ReplicationClient:
                     url,
                     data={"block_id": block_id, "checksum": checksum},
                     files={"file": (block_id, content, "application/octet-stream")},
+                    headers={INTERNAL_API_KEY_HEADER: get_settings().internal_api_key},
                 )
         except httpx.HTTPError as error:
             raise ReplicationTargetError(

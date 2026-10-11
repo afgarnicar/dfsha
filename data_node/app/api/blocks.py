@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 
 from app.dependencies import get_block_store, get_replication_client
 from app.schemas import ReplicateRequest, ReplicateResponse, StoredBlockResponse
+from app.security import require_internal_api_key
 from app.services.replication_client import ReplicationClient, ReplicationTargetError
 from app.storage.block_store import (
     BlockNotFoundError,
@@ -25,7 +26,12 @@ from app.storage.block_store import (
 )
 from app.storage.checksum import is_valid_sha256_hex
 
-router = APIRouter(prefix="/blocks", tags=["blocks"])
+# Todos los endpoints de bloques exigen la credencial interna entre nodos.
+router = APIRouter(
+    prefix="/blocks",
+    tags=["blocks"],
+    dependencies=[Depends(require_internal_api_key)],
+)
 
 # Errores reutilizables, con mensajes en español.
 _invalid_block_id = HTTPException(
