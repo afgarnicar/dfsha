@@ -25,6 +25,7 @@ from app.services.cleanup_worker import CleanupWorker
 from app.services.datanode_health_client import DataNodeHealthClient
 from app.services.datanode_service import DataNodeRegistryService
 from app.services.node_monitor_service import NodeMonitorService
+from app.services.rereplication_service import RereplicationService
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,12 +45,29 @@ async def lifespan(app: FastAPI):
     finally:
         session.close()
 
+    def on_node_offline(datanode_id: int, name: str) -> None:
+        # Cuando un DataNode cae, se intenta restaurar el factor de replicación
+        # de sus bloques. Usa su propia sesión porque corre dentro del monitor.
+        logging.getLogger(__name__).warning(
+            "DataNode %s (id=%d) OFFLINE: iniciando re-replicación.", name, datanode_id
+        )
+        rerep_session = SessionLocal()
+        try:
+            RereplicationService(rerep_session).handle_node_offline(datanode_id)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Error durante la re-replicación del nodo %s.", name
+            )
+        finally:
+            rerep_session.close()
+
     # Arranca el monitor de DataNodes como tarea de fondo.
     monitor = NodeMonitorService(
         session_factory=SessionLocal,
         health_client=DataNodeHealthClient(),
         interval_seconds=settings.health_check_interval_seconds,
         failure_threshold=settings.datanode_failure_threshold,
+        on_node_offline=on_node_offline,
     )
     monitor_task = asyncio.create_task(monitor.run_forever())
 

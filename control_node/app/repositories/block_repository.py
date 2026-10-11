@@ -77,6 +77,24 @@ class BlockRepository:
         )
         return list(self._session.scalars(statement).all())
 
+    def list_blocks_on_datanode(self, datanode_id: int) -> list[Block]:
+        """Bloques que tienen una réplica en el DataNode dado, con todas sus réplicas.
+
+        Se usa en la re-replicación: cuando un nodo cae, hay que revisar los
+        bloques que tenían una copia en él.
+        """
+        statement = (
+            select(Block)
+            .join(BlockLocation, BlockLocation.block_id == Block.id)
+            .where(BlockLocation.datanode_id == datanode_id)
+            .options(selectinload(Block.locations).selectinload(BlockLocation.datanode))
+        )
+        return list(self._session.scalars(statement).unique().all())
+
+    def set_location_role(self, location: BlockLocation, role: ReplicaRole) -> None:
+        """Cambia el rol (PRIMARY/BACKUP) de una réplica."""
+        location.role = role
+
     def delete_location(self, location: BlockLocation) -> None:
         """Quita una réplica de los metadatos (ya se borró del DataNode)."""
         location.block.locations.remove(location)
