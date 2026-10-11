@@ -20,6 +20,7 @@ from app.services.download_service import (
     FileIncompleteError,
 )
 from app.services.file_access_service import FileAccessDeniedError, FileNotFoundInPathError
+from app.services.lock_service import FileLockedError
 from app.services.path_service import PathNotFoundError, PathPermissionError
 from app.services.temp_storage_service import (
     InsufficientTempSpaceError,
@@ -43,6 +44,10 @@ _file_not_found = HTTPException(
 _file_forbidden = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN,
     detail="No tiene permiso para realizar esta operación sobre el archivo.",
+)
+_file_locked = HTTPException(
+    status_code=status.HTTP_423_LOCKED,
+    detail="El archivo está bloqueado: otra sesión lo tiene abierto para escritura.",
 )
 
 
@@ -117,10 +122,12 @@ def download_file(
     temp_storage: TemporaryStorageService = Depends(get_temp_storage),
 ) -> StreamingResponse:
     """Descarga un archivo completo, reconstruido desde sus bloques (GET)."""
+    settings = get_settings()
     service = DownloadService(
         session=session,
         temp_storage=temp_storage,
-        max_parallel_downloads=get_settings().max_parallel_downloads,
+        max_parallel_downloads=settings.max_parallel_downloads,
+        lock_timeout_seconds=settings.lock_timeout_seconds,
     )
     try:
         download = service.prepare(current_user, path)
@@ -128,6 +135,8 @@ def download_file(
         raise _file_not_found
     except (PathPermissionError, FileAccessDeniedError):
         raise _file_forbidden
+    except FileLockedError:
+        raise _file_locked
     except InsufficientTempSpaceError:
         raise HTTPException(
             status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
@@ -165,11 +174,15 @@ def delete_file(
 ) -> DeleteFileResponse:
     """Borra un archivo y sus bloques de los DataNodes (operación rm)."""
     try:
-        result = DeleteService(session).delete(current_user, body.path)
+        result = DeleteService(session, get_settings().lock_timeout_seconds).delete(
+            current_user, body.path
+        )
     except (PathNotFoundError, FileNotFoundInPathError):
         raise _file_not_found
     except (PathPermissionError, FileAccessDeniedError):
         raise _file_forbidden
+    except FileLockedError:
+        raise _file_locked
 
     return DeleteFileResponse(
         name=result.name,

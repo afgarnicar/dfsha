@@ -2,7 +2,8 @@
 
 Flujo del rm:
 
-1. Valida permiso de escritura en el directorio que contiene el archivo.
+1. Valida permiso de escritura en el directorio que contiene el archivo y que
+   nadie tenga un lock de escritura sobre él.
 2. Marca el archivo como DELETING: desde ese momento ya no aparece en ls ni se
    puede descargar.
 3. Pide a cada DataNode que borre sus réplicas de los bloques. Cada réplica
@@ -12,8 +13,12 @@ Flujo del rm:
    queda en DELETING con esas réplicas pendientes, y la limpieza periódica lo
    vuelve a intentar hasta terminar.
 
-La misma limpieza recoge los archivos que quedaron FAILED tras una subida
-fallida, para no dejar sus bloques regados en los DataNodes.
+La misma limpieza recoge:
+
+- los archivos que quedaron FAILED tras una subida fallida, para no dejar sus
+  bloques regados en los DataNodes;
+- las versiones viejas de los archivos modificados con write, y las versiones
+  nuevas de un write que falló a medias.
 
 Al marcar un archivo para borrar, se le cambia el nombre interno (por ejemplo
 ``.~dfsha-borrando-15``). Así su nombre original queda libre de inmediato y el
@@ -24,7 +29,6 @@ las réplicas todavía esté pendiente.
 import logging
 from dataclasses import dataclass
 
-import httpx
 from sqlalchemy.orm import Session
 
 from app.models.filesystem import File
@@ -33,13 +37,11 @@ from app.repositories.block_repository import BlockRepository
 from app.repositories.file_repository import FileRepository
 from app.security.permissions import Action
 from app.services.file_access_service import FileAccessService
+from app.services.lock_service import LockService
+from app.services.replica_eraser import ReplicaEraser
 from shared.enums import FileStatus
 
 logger = logging.getLogger(__name__)
-
-# Tiempos de espera para borrar un bloque: es una operación pequeña.
-_CONNECT_TIMEOUT_SECONDS = 3.0
-_REQUEST_TIMEOUT_SECONDS = 10.0
 
 # Estados de archivo cuyos bloques hay que limpiar de los DataNodes.
 CLEANUP_STATUSES = (FileStatus.DELETING, FileStatus.FAILED)
@@ -61,16 +63,19 @@ class DeleteResult:
 class DeleteService:
     """Borra archivos y sus bloques de los DataNodes."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, lock_timeout_seconds: int = 30) -> None:
         self._session = session
         self._access = FileAccessService(session)
         self._files = FileRepository(session)
         self._blocks = BlockRepository(session)
+        self._locks = LockService(session, lock_timeout_seconds)
+        self._eraser = ReplicaEraser(session)
 
     def delete(self, user: User, path: str) -> DeleteResult:
         """Borra el archivo de la ruta indicada (operación rm)."""
         located = self._access.locate(user, path)
         self._access.require_directory_permission(user, located.directory, Action.WRITE)
+        self._locks.ensure_not_locked(located.file.id)
 
         file = located.file
         original_name = file.name
@@ -94,32 +99,8 @@ class DeleteService:
         if file.status != FileStatus.DELETING:
             # Una subida FAILED también libera su nombre antes de limpiarse.
             self._mark_for_deletion(file)
-        pending = 0
-        timeout = httpx.Timeout(_REQUEST_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
 
-        with httpx.Client(timeout=timeout) as client:
-            for block in self._blocks.list_all_for_file(file.id):
-                for location in list(block.locations):
-                    node = location.datanode
-                    url = f"http://{node.host}:{node.port}/blocks/{block.storage_key}"
-                    try:
-                        response = client.delete(url)
-                        deleted = response.status_code == 204
-                        reason = f"HTTP {response.status_code}"
-                    except httpx.HTTPError as error:
-                        deleted = False
-                        reason = type(error).__name__
-
-                    if deleted:
-                        self._blocks.delete_location(location)
-                    else:
-                        pending += 1
-                        logger.warning(
-                            "No se pudo borrar el bloque %s en %s (%s); queda pendiente.",
-                            block.storage_key, node.name, reason,
-                        )
-                # Se confirma por bloque para no perder el progreso si algo falla.
-                self._session.commit()
+        pending = self._eraser.erase(self._blocks.list_all_for_file(file.id))
 
         if pending == 0:
             self._files.delete(file)
@@ -144,3 +125,30 @@ class DeleteService:
                 self._session.rollback()
                 logger.exception("No se pudo limpiar el archivo con id %d.", file.id)
         return completed
+
+    def purge_stale_versions(self) -> int:
+        """Borra los bloques de versiones que ya no son la actual.
+
+        Son las versiones viejas de archivos modificados con write, o versiones
+        nuevas de un write que falló. Una versión MAYOR que la actual solo se
+        borra si nadie tiene el lock del archivo: podría ser un write en curso.
+        Devuelve cuántos bloques se eliminaron por completo.
+        """
+        removed = 0
+        for file in self._files.list_by_status((FileStatus.AVAILABLE,)):
+            locked = self._locks.active_lock(file.id) is not None
+            stale = [
+                block
+                for block in self._blocks.list_all_for_file(file.id)
+                if block.version < file.current_version
+                or (block.version > file.current_version and not locked)
+            ]
+            if not stale:
+                continue
+            try:
+                self._eraser.erase(stale, drop_empty_blocks=True)
+                removed += sum(1 for block in stale if not block.locations)
+            except Exception:
+                self._session.rollback()
+                logger.exception("No se pudieron limpiar versiones viejas del archivo %d.", file.id)
+        return removed

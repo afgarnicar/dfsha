@@ -1,9 +1,13 @@
-"""Tarea periódica que termina los borrados pendientes.
+"""Tarea periódica de limpieza.
 
-Cuando un rm no pudo borrar algunas réplicas (por ejemplo, porque un DataNode
-estaba OFFLINE), el archivo queda en DELETING. Esta tarea lo reintenta cada
-cierto tiempo hasta que todas las réplicas desaparezcan. También limpia los
-bloques de las subidas que terminaron en FAILED.
+En cada pasada:
+
+- reintenta los rm que quedaron pendientes (archivos en DELETING) y limpia los
+  bloques de las subidas que terminaron en FAILED;
+- borra las versiones viejas de archivos modificados con write (y las de un
+  write que falló);
+- cierra los handles vencidos y borra los locks vencidos, por si el cliente
+  desapareció sin hacer close.
 """
 
 import asyncio
@@ -12,7 +16,9 @@ from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.services.delete_service import DeleteService
+from app.services.handle_service import HandleService
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +46,18 @@ class CleanupWorker:
 
     def run_once(self) -> int:
         """Hace una pasada de limpieza. Devuelve cuántos archivos se completaron."""
+        settings = get_settings()
         session = self._session_factory()
         try:
-            return DeleteService(session).purge_pending()
+            handles, locks = HandleService(
+                session, settings.lock_timeout_seconds, settings.handle_timeout_seconds
+            ).sweep_expired()
+            if handles or locks:
+                logger.info("Limpieza: %d handle(s) y %d lock(s) vencidos liberados.", handles, locks)
+            deletes = DeleteService(session, settings.lock_timeout_seconds)
+            stale = deletes.purge_stale_versions()
+            if stale:
+                logger.info("Limpieza: %d bloque(s) de versiones viejas borrados.", stale)
+            return deletes.purge_pending()
         finally:
             session.close()

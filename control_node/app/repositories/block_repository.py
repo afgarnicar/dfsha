@@ -1,6 +1,6 @@
 """Repositorio de acceso a datos de bloques y sus ubicaciones."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.storage import Block, BlockLocation
@@ -81,3 +81,18 @@ class BlockRepository:
         """Quita una réplica de los metadatos (ya se borró del DataNode)."""
         location.block.locations.remove(location)
         self._session.delete(location)
+
+    def delete_block(self, block: Block) -> None:
+        """Quita un bloque de los metadatos (ya no tiene réplicas en ningún nodo)."""
+        self._session.delete(block)
+
+    def next_version(self, file_id: int, current_version: int) -> int:
+        """Número de versión siguiente a la más alta que tenga el archivo.
+
+        Se usa la más alta registrada (no solo la actual) para no chocar con los
+        bloques de un write anterior que haya fallado y aún no se hayan limpiado.
+        """
+        highest = self._session.scalar(
+            select(func.max(Block.version)).where(Block.file_id == file_id)
+        )
+        return max(highest or 0, current_version) + 1
