@@ -10,6 +10,9 @@ import logging
 
 import httpx
 
+from app.config import get_settings
+from shared.constants import INTERNAL_API_KEY_HEADER
+
 logger = logging.getLogger(__name__)
 
 _CONNECT_TIMEOUT_SECONDS = 5.0
@@ -44,6 +47,7 @@ class ReplicationOrderClient:
                 response = client.post(
                     url,
                     json={"target_host": target_host, "target_port": target_port},
+                    headers={INTERNAL_API_KEY_HEADER: get_settings().internal_api_key},
                 )
         except httpx.HTTPError as error:
             raise ReplicationOrderError(

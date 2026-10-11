@@ -14,8 +14,10 @@ import logging
 import httpx
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models.storage import Block
 from app.repositories.block_repository import BlockRepository
+from shared.constants import INTERNAL_API_KEY_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +41,9 @@ class ReplicaEraser:
         """
         pending = 0
         timeout = httpx.Timeout(_REQUEST_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
+        headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
 
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
             for block in blocks:
                 for location in list(block.locations):
                     node = location.datanode

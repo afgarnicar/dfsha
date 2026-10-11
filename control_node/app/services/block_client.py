@@ -10,6 +10,9 @@ import logging
 
 import httpx
 
+from app.config import get_settings
+from shared.constants import INTERNAL_API_KEY_HEADER
+
 logger = logging.getLogger(__name__)
 
 # Tiempos de espera: amplio para la transferencia, porque un bloque puede pesar
@@ -44,6 +47,7 @@ class BlockClient:
         timeout = httpx.Timeout(
             _TRANSFER_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS
         )
+        headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
         last_error: str = ""
 
         for attempt in range(1, self._max_retries + 1):
@@ -53,6 +57,7 @@ class BlockClient:
                         url,
                         data={"block_id": block_id, "checksum": checksum},
                         files={"file": (block_id, content, "application/octet-stream")},
+                        headers=headers,
                     )
                 if response.status_code == 201:
                     return

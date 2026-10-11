@@ -18,6 +18,9 @@ from pathlib import Path
 
 import httpx
 
+from app.config import get_settings
+from shared.constants import INTERNAL_API_KEY_HEADER
+
 logger = logging.getLogger(__name__)
 
 # Tiempos de espera: corto para conectar, amplio para transferir un bloque.
@@ -85,7 +88,9 @@ class BlockFetcher:
         semaphore = asyncio.Semaphore(self._max_parallel)
         timeout = httpx.Timeout(_TRANSFER_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
         limits = httpx.Limits(max_connections=self._max_parallel)
-        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        # La credencial interna se envía en todas las descargas a los DataNodes.
+        headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
+        async with httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers) as client:
             tasks = [
                 asyncio.create_task(self._fetch_with_limit(client, semaphore, plan))
                 for plan in plans
