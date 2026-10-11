@@ -20,6 +20,7 @@ from app.api.groups import router as groups_router
 from app.config import get_settings
 from app.db.session import SessionLocal, wait_for_database
 from app.services.bootstrap_service import BootstrapService
+from app.services.cleanup_worker import CleanupWorker
 from app.services.datanode_health_client import DataNodeHealthClient
 from app.services.datanode_service import DataNodeRegistryService
 from app.services.node_monitor_service import NodeMonitorService
@@ -51,12 +52,21 @@ async def lifespan(app: FastAPI):
     )
     monitor_task = asyncio.create_task(monitor.run_forever())
 
+    # Arranca la limpieza periódica de borrados pendientes (rm).
+    cleanup = CleanupWorker(
+        session_factory=SessionLocal,
+        interval_seconds=settings.cleanup_interval_seconds,
+    )
+    cleanup_task = asyncio.create_task(cleanup.run_forever())
+
     yield
 
-    # Al apagar el ControlNode se detiene el monitor de forma ordenada.
-    monitor_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await monitor_task
+    # Al apagar el ControlNode se detienen las tareas de fondo de forma ordenada.
+    for task in (monitor_task, cleanup_task):
+        task.cancel()
+    for task in (monitor_task, cleanup_task):
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 # Instancia principal de la aplicación del ControlNode.

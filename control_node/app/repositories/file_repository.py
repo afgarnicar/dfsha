@@ -21,10 +21,14 @@ class FileRepository:
         self._session = session
 
     def list_in_directory(self, directory_id: int) -> Sequence[File]:
-        """Devuelve los archivos de un directorio, ordenados por nombre."""
+        """Devuelve los archivos visibles de un directorio, ordenados por nombre.
+
+        Solo se listan los archivos AVAILABLE: los que se están subiendo, los que
+        fallaron y los que se están borrando no deben verse en un ls.
+        """
         statement = (
             select(File)
-            .where(File.directory_id == directory_id)
+            .where(File.directory_id == directory_id, File.status == FileStatus.AVAILABLE)
             .order_by(File.name)
         )
         return self._session.scalars(statement).all()
@@ -56,6 +60,11 @@ class FileRepository:
         )
         self._session.add(file)
         return file
+
+    def list_by_status(self, statuses: Sequence[FileStatus]) -> Sequence[File]:
+        """Devuelve los archivos que están en alguno de los estados dados."""
+        statement = select(File).where(File.status.in_(statuses)).order_by(File.id)
+        return self._session.scalars(statement).all()
 
     def delete(self, file: File) -> None:
         """Elimina un archivo (y en cascada sus bloques y ubicaciones)."""
