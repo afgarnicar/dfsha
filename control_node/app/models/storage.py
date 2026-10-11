@@ -71,6 +71,10 @@ class Block(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Bytes realmente usados; el último bloque puede estar parcialmente lleno.
     used_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Nombre con el que el bloque está guardado en los DataNodes (el block_id
+    # que reciben en POST /blocks). Lo genera el ControlNode y es único. Sin él
+    # no se podría pedir, borrar ni replicar el bloque en los DataNodes.
+    storage_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     # Checksum SHA-256 del contenido del bloque, en hexadecimal.
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[BlockStatus] = mapped_column(
