@@ -186,7 +186,9 @@ class UploadService:
             # Elegir los dos DataNodes (PRIMARY y BACKUP) para este bloque.
             placements = self._placement.place_block(nodes, index, len(ciphertext))
 
-            # Identificador opaco del bloque, generado por el ControlNode.
+            # Identificador opaco del bloque, generado por el ControlNode. Se
+            # guarda en la base de datos como storage_key para poder pedir,
+            # borrar o replicar el bloque más adelante.
             block_id = uuid.uuid4().hex
 
             block = self._blocks.create_block(
@@ -195,6 +197,7 @@ class UploadService:
                 version=file.current_version,
                 used_size_bytes=len(chunk),
                 checksum=checksum,
+                storage_key=block_id,
             )
 
             for placement in placements:

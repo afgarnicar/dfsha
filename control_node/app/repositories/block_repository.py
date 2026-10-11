@@ -19,10 +19,16 @@ class BlockRepository:
         version: int,
         used_size_bytes: int,
         checksum: str,
+        storage_key: str,
     ) -> Block:
-        """Crea un bloque en estado PENDING."""
+        """Crea un bloque en estado PENDING.
+
+        ``storage_key`` es el nombre con el que el bloque se guarda en los
+        DataNodes; se persiste para poder leerlo, borrarlo o replicarlo después.
+        """
         block = Block(
             file_id=file_id,
+            storage_key=storage_key,
             block_index=block_index,
             version=version,
             used_size_bytes=used_size_bytes,
