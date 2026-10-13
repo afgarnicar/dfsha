@@ -19,10 +19,8 @@ Si algo falla, la versión vieja sigue siendo la activa y se borran los bloques
 que alcanzó a crear la versión nueva.
 """
 
-import hashlib
 import logging
 import shutil
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,22 +28,15 @@ from typing import BinaryIO
 
 from sqlalchemy.orm import Session
 
-from app.distribution.placement_service import (
-    EligibleNode,
-    NotEnoughEligibleNodesError,
-    PlacementService,
-)
-from app.distribution.strategy import RoundRobinStrategy
+from app.distribution.placement_service import EligibleNode, NotEnoughEligibleNodesError
 from app.models.storage import Block
 from app.models.user import User
 from app.repositories.block_repository import BlockRepository
-from app.repositories.datanode_repository import DataNodeRepository
-from app.security.encryption import BlockCipher
 from app.services.block_assembler import BlockAssembler, check_complete
-from app.services.block_client import BlockClient, BlockSendError
+from app.services.block_client import BlockSendError
+from app.services.block_writer import BlockWriter
 from app.services.handle_service import HandleService, ValidHandle
 from app.services.read_service import InvalidRangeError, slices_for_range
-from app.services.replica_eraser import ReplicaEraser
 from app.services.temp_storage_service import TempWorkspace, TemporaryStorageService
 
 logger = logging.getLogger(__name__)
@@ -91,13 +82,8 @@ class WriteService:
         self._session = session
         self._handles = handles
         self._blocks = BlockRepository(session)
-        self._datanodes = DataNodeRepository(session)
         self._assembler = BlockAssembler(temp_storage, max_parallel_downloads)
-        self._eraser = ReplicaEraser(session)
-        self._placement = PlacementService(RoundRobinStrategy())
-        self._cipher = BlockCipher()
-        self._block_client = BlockClient(max_retries=max_retries)
-        self._block_size = block_size_bytes
+        self._writer = BlockWriter(session, block_size_bytes, max_retries)
 
     def write(self, user: User, token: str, offset: int, data: BinaryIO) -> WriteResult:
         """Escribe ``data`` desde ``offset`` y activa la versión nueva del archivo."""
@@ -120,9 +106,9 @@ class WriteService:
         check_complete(file, old_blocks)
 
         # Precondición: debe poder garantizarse el factor de replicación 2.
-        nodes = self._eligible_nodes()
+        nodes = self._writer.eligible_nodes()
         try:
-            self._placement.place_block(nodes, 0, min(new_size, self._block_size))
+            self._writer.check_capacity(nodes, new_size)
         except NotEnoughEligibleNodesError as error:
             raise WriteFailedError(
                 "no hay suficientes DataNodes disponibles para garantizar el factor "
@@ -177,18 +163,6 @@ class WriteService:
                     target.write(chunk)
                     remaining -= len(chunk)
 
-    def _eligible_nodes(self) -> list[EligibleNode]:
-        """DataNodes registrados, como candidatos para colocar los bloques nuevos."""
-        return [
-            EligibleNode(
-                datanode_id=node.id,
-                name=node.name,
-                status=node.status,
-                free_space_bytes=node.free_space_bytes,
-            )
-            for node in self._datanodes.list_all()
-        ]
-
     def _store_new_version(
         self, valid: ValidHandle, new_path: Path, new_size: int, nodes: list[EligibleNode]
     ) -> WriteResult:
@@ -196,20 +170,18 @@ class WriteService:
         file = valid.file
         old_version = file.current_version
         new_version = self._blocks.next_version(file.id, old_version)
-        block_count = 0
 
         try:
             with new_path.open("rb") as source:
-                index = 0
-                while chunk := source.read(self._block_size):
-                    self._store_block(file.id, new_version, index, chunk, nodes)
-                    # Cada bloque guardado renueva el lock: un write largo no lo pierde.
-                    self._handles.touch(valid)
-                    index += 1
-                block_count = index
+                # Cada bloque guardado renueva el lock: un write largo no lo pierde.
+                stored = self._writer.store_version(
+                    file.id, new_version, source, nodes,
+                    on_block_stored=lambda: self._handles.touch(valid),
+                )
+            block_count = stored.block_count
         except Exception as error:
             self._session.rollback()
-            self._discard_version(file.id, new_version)
+            self._writer.discard_version(file.id, new_version)
             if isinstance(error, (BlockSendError, NotEnoughEligibleNodesError)):
                 raise WriteFailedError(str(error)) from error
             raise
@@ -225,7 +197,7 @@ class WriteService:
 
         # La versión vieja ya no se usa: se borra. Lo que no se pueda borrar ahora
         # (un nodo caído) lo termina la limpieza periódica.
-        self._discard_version(file.id, old_version)
+        self._writer.discard_version(file.id, old_version)
 
         return WriteResult(
             size_bytes=new_size,
@@ -233,52 +205,3 @@ class WriteService:
             block_count=block_count,
             expires_at=valid.handle.expires_at,
         )
-
-    def _store_block(
-        self, file_id: int, version: int, index: int, chunk: bytes, nodes: list[EligibleNode]
-    ) -> None:
-        """Cifra un bloque y lo guarda en PRIMARY y BACKUP."""
-        ciphertext = self._cipher.encrypt(chunk)
-        checksum = hashlib.sha256(ciphertext).hexdigest()
-        placements = self._placement.place_block(nodes, index, len(ciphertext))
-        storage_key = uuid.uuid4().hex
-
-        block = self._blocks.create_block(
-            file_id=file_id,
-            block_index=index,
-            version=version,
-            used_size_bytes=len(chunk),
-            checksum=checksum,
-            storage_key=storage_key,
-        )
-        # Se confirma antes de enviar y después de cada réplica guardada: si una
-        # réplica falla, las que sí quedaron en un DataNode están anotadas y se
-        # pueden borrar al descartar la versión.
-        self._session.commit()
-        for placement in placements:
-            node = self._datanodes.get_by_id(placement.datanode_id)
-            self._block_client.send_block(
-                host=node.host,
-                port=node.port,
-                block_id=storage_key,
-                checksum=checksum,
-                content=ciphertext,
-            )
-            self._blocks.add_location(block.id, placement.datanode_id, placement.role)
-            self._session.commit()
-        self._blocks.mark_block_committed(block)
-        self._session.commit()
-
-    def _discard_version(self, file_id: int, version: int) -> None:
-        """Borra los bloques de una versión (de los DataNodes y de los metadatos)."""
-        blocks = self._blocks.list_for_file_version(file_id, version)
-        if not blocks:
-            return
-        try:
-            self._eraser.erase(blocks, drop_empty_blocks=True)
-        except Exception:
-            self._session.rollback()
-            logger.exception(
-                "No se pudo borrar la versión %d del archivo %d; la limpieza lo reintentará.",
-                version, file_id,
-            )

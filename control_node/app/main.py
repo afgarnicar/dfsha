@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
+from app.api.access import router as access_router
 from app.api.auth import router as auth_router
 from app.api.datanodes import router as datanodes_router
 from app.api.file_sessions import router as file_sessions_router
@@ -20,12 +21,14 @@ from app.api.filesystem import router as filesystem_router
 from app.api.groups import router as groups_router
 from app.config import get_settings
 from app.db.session import SessionLocal, wait_for_database
+from app.repositories.file_repository import FileRepository
 from app.services.bootstrap_service import BootstrapService
 from app.services.cleanup_worker import CleanupWorker
 from app.services.datanode_health_client import DataNodeHealthClient
 from app.services.datanode_service import DataNodeRegistryService
 from app.services.node_monitor_service import NodeMonitorService
 from app.services.rereplication_service import RereplicationService
+from shared.enums import FileStatus
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,6 +45,17 @@ async def lifespan(app: FastAPI):
         BootstrapService(session).run()
         # Registra los DataNodes configurados (operación idempotente).
         DataNodeRegistryService(session).sync_from_config(settings.datanodes)
+        # Una subida que estaba en curso cuando el ControlNode se apagó ya no
+        # va a terminar: se marca FAILED para que la limpieza borre sus bloques
+        # y libere el nombre.
+        interrupted = FileRepository(session).list_by_status((FileStatus.UPLOADING,))
+        for file in interrupted:
+            file.status = FileStatus.FAILED
+        session.commit()
+        if interrupted:
+            logging.getLogger(__name__).warning(
+                "%d subida(s) interrumpida(s) marcadas como FAILED.", len(interrupted)
+            )
     finally:
         session.close()
 
@@ -97,6 +111,7 @@ app.include_router(groups_router)
 app.include_router(filesystem_router)
 app.include_router(files_router)
 app.include_router(file_sessions_router)
+app.include_router(access_router)
 
 
 @app.get("/health")

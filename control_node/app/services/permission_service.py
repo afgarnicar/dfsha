@@ -54,13 +54,21 @@ class PermissionService:
         if user_acl is not None:
             return self._acl_allows(user_acl, action)
 
-        # 2. ACL de alguno de los grupos del usuario.
-        for group_id in user_group_ids:
-            group_acl = self._acl.find_for_subject(
-                resource.resource_type, resource.resource_id, SUBJECT_GROUP, group_id
+        # 2. ACL de los grupos del usuario. Si pertenece a varios grupos con
+        #    ACL sobre el recurso, basta con que uno de ellos lo permita (así el
+        #    resultado no depende del orden en que se lean los grupos).
+        group_acls = [
+            entry
+            for group_id in user_group_ids
+            if (
+                entry := self._acl.find_for_subject(
+                    resource.resource_type, resource.resource_id, SUBJECT_GROUP, group_id
+                )
             )
-            if group_acl is not None:
-                return self._acl_allows(group_acl, action)
+            is not None
+        ]
+        if group_acls:
+            return any(self._acl_allows(entry, action) for entry in group_acls)
 
         # 3. Modo Unix: propietario -> grupo -> otros.
         if resource.owner_id == user.id:

@@ -74,3 +74,12 @@ class AclRepository:
         )
         self._session.add(entry)
         return entry
+
+    def delete(self, entry: AclEntry) -> None:
+        """Elimina una entrada de ACL."""
+        self._session.delete(entry)
+
+    def delete_for_resource(self, resource_type: str, resource_id: int) -> None:
+        """Elimina todas las entradas de ACL de un recurso que se va a borrar."""
+        for entry in self.list_for_resource(resource_type, resource_id):
+            self._session.delete(entry)

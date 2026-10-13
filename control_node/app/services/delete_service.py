@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.models.filesystem import File
 from app.models.user import User
+from app.repositories.acl_repository import RESOURCE_FILE, AclRepository
 from app.repositories.block_repository import BlockRepository
 from app.repositories.file_repository import FileRepository
 from app.security.permissions import Action
@@ -103,6 +104,8 @@ class DeleteService:
         pending = self._eraser.erase(self._blocks.list_all_for_file(file.id))
 
         if pending == 0:
+            # Sus ACL se borran con él, para no dejar permisos sueltos.
+            AclRepository(self._session).delete_for_resource(RESOURCE_FILE, file.id)
             self._files.delete(file)
             self._session.commit()
             logger.info("Archivo %r eliminado por completo.", name)

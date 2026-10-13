@@ -1,58 +1,73 @@
-"""Servicio de subida de archivos (PUT).
+"""Servicio de subida de archivos (PUT), con sobrescritura opcional.
 
-Orquesta el flujo completo de subir un archivo al sistema distribuido:
+Flujo de un PUT normal:
 
 1. Valida el permiso de escritura en el directorio destino.
-2. Rechaza si el archivo ya existe o si no hay DataNodes suficientes.
-3. Parte el archivo en bloques de tamaño fijo.
-4. Cifra cada bloque, calcula su checksum y lo coloca en dos DataNodes
-   distintos (PRIMARY y BACKUP) mediante la estrategia de distribución.
-5. Si todos los bloques se almacenan con factor de replicación 2, marca el
-   archivo como disponible; si algo falla, lo marca como fallido y limpia.
+2. Rechaza si el archivo ya existe (409) o si no hay 2 DataNodes elegibles.
+3. Crea el archivo en estado UPLOADING.
+4. Lee el contenido por bloques de 64 MB (sin cargarlo entero en memoria), cifra
+   cada bloque y lo guarda en PRIMARY y BACKUP con Round Robin. Si una réplica
+   falla, se prueba en otro DataNode elegible (``BlockWriter``).
+5. Si todos los bloques quedan con factor de replicación 2, el archivo pasa a
+   AVAILABLE. Si algo falla, se descarta: se borran sus bloques y se libera el
+   nombre.
 
-El contenido en claro nunca llega a los DataNodes: se cifra en este servicio
-antes de enviarlo.
+Flujo de un PUT con ``overwrite`` sobre un archivo que ya existe:
+
+1. Exige permiso de escritura sobre el archivo y toma su WRITE LOCK (si otra
+   sesión lo tiene, responde 423). Mientras dura, nadie lo lee ni lo modifica.
+2. Guarda el contenido nuevo como una versión nueva, igual que el write.
+3. Solo cuando TODOS los bloques nuevos están guardados, activa la versión nueva
+   y borra la vieja. Si algo falla, la versión vieja sigue intacta y disponible.
+
+El contenido en claro nunca llega a los DataNodes: se cifra antes de enviarlo.
 """
 
-import hashlib
 import logging
-import uuid
 from dataclasses import dataclass
+from typing import BinaryIO
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.distribution.placement_service import (
-    EligibleNode,
-    NotEnoughEligibleNodesError,
-    PlacementService,
-)
-from app.distribution.strategy import RoundRobinStrategy
+from app.distribution.placement_service import NotEnoughEligibleNodesError
 from app.models.filesystem import Directory, File
 from app.models.user import User
 from app.repositories.acl_repository import RESOURCE_DIRECTORY
 from app.repositories.block_repository import BlockRepository
-from app.repositories.datanode_repository import DataNodeRepository
 from app.repositories.file_repository import FileRepository
-from app.security.encryption import BlockCipher
 from app.security.permissions import Action
-from app.services.block_client import BlockClient, BlockSendError
+from app.services.block_client import BlockSendError
+from app.services.block_writer import BlockWriter, StoredVersion
+from app.services.delete_service import DeleteService
+from app.services.file_access_service import FileAccessDeniedError, FileAccessService
+from app.services.lock_service import LockService
 from app.services.path_service import PathResolver
 from app.services.permission_service import PermissionService, ProtectedResource
 from shared.enums import FileStatus
 
 logger = logging.getLogger(__name__)
 
+_NOT_ENOUGH_NODES = (
+    "No es posible almacenar el archivo: no hay suficientes DataNodes "
+    "disponibles para garantizar el factor de replicación 2."
+)
+
 
 class FileAlreadyExistsError(Exception):
-    """Se lanza cuando ya existe un archivo con ese nombre en el directorio."""
+    """Ya existe un archivo con ese nombre en el directorio (y no se pidió sobrescribir)."""
+
+
+class FileBusyError(Exception):
+    """El archivo existe pero todavía se está subiendo; no se puede sobrescribir."""
 
 
 class UploadPermissionError(Exception):
-    """Se lanza cuando el usuario no puede escribir en el directorio destino."""
+    """El usuario no puede escribir en el directorio destino o en el archivo."""
 
 
 class UploadFailedError(Exception):
-    """Se lanza cuando la subida falla y el archivo queda marcado como FAILED."""
+    """La subida falló; no quedó ningún cambio visible."""
 
 
 @dataclass(frozen=True)
@@ -63,22 +78,35 @@ class UploadResult:
     name: str
     size_bytes: int
     block_count: int
+    overwritten: bool = False
+
+
+def _stream_size(source: BinaryIO) -> int:
+    """Tamaño del contenido recibido, sin leerlo a memoria."""
+    source.seek(0, 2)
+    size = source.tell()
+    source.seek(0)
+    return size
 
 
 class UploadService:
     """Coordina la subida y distribución de un archivo con replicación factor 2."""
 
-    def __init__(self, session: Session, block_size_bytes: int, max_retries: int) -> None:
+    def __init__(
+        self,
+        session: Session,
+        block_size_bytes: int,
+        max_retries: int,
+        lock_timeout_seconds: int = 30,
+    ) -> None:
         self._session = session
-        self._block_size_bytes = block_size_bytes
         self._files = FileRepository(session)
         self._blocks = BlockRepository(session)
-        self._datanodes = DataNodeRepository(session)
         self._resolver = PathResolver(session)
         self._permissions = PermissionService(session)
-        self._placement = PlacementService(RoundRobinStrategy())
-        self._cipher = BlockCipher()
-        self._block_client = BlockClient(max_retries=max_retries)
+        self._access = FileAccessService(session)
+        self._locks = LockService(session, lock_timeout_seconds)
+        self._writer = BlockWriter(session, block_size_bytes, max_retries)
 
     def _dir_resource(self, directory: Directory) -> ProtectedResource:
         return ProtectedResource(
@@ -89,142 +117,162 @@ class UploadService:
             permissions=directory.permissions,
         )
 
-    def _eligible_nodes(self) -> list[EligibleNode]:
-        """Lee los DataNodes registrados como candidatos de colocación."""
-        return [
-            EligibleNode(
-                datanode_id=node.id,
-                name=node.name,
-                status=node.status,
-                free_space_bytes=node.free_space_bytes,
-            )
-            for node in self._datanodes.list_all()
-        ]
-
     def upload(
-        self, user: User, directory_path: str, filename: str, content: bytes
+        self,
+        user: User,
+        directory_path: str,
+        filename: str,
+        source: BinaryIO,
+        overwrite: bool = False,
     ) -> UploadResult:
-        """Sube un archivo al directorio indicado y lo distribuye en bloques."""
-        # 1. Resolver directorio destino y validar permiso de escritura.
+        """Sube ``source`` al directorio. Con ``overwrite`` reemplaza el existente."""
         directory = self._resolver.resolve(user, directory_path)
+        existing = self._files.get_in_directory(directory.id, filename)
+
+        if existing is not None:
+            if not overwrite:
+                raise FileAlreadyExistsError(filename)
+            if existing.status != FileStatus.AVAILABLE:
+                raise FileBusyError(filename)
+            return self._overwrite(user, existing, source)
+
         if not self._permissions.can(user, self._dir_resource(directory), Action.WRITE):
             raise UploadPermissionError(directory_path)
+        return self._create(user, directory, filename, source)
 
-        # 2. Rechazar si el archivo ya existe (la sobrescritura es otra operación).
-        if self._files.get_in_directory(directory.id, filename) is not None:
-            raise FileAlreadyExistsError(filename)
+    # ------------------------------------------------------------------ PUT nuevo
 
-        # 3. Partir el contenido en bloques del tamaño configurado.
-        chunks = self._split_into_blocks(content)
-        node_snapshot = self._eligible_nodes()
-
-        # 4. Precondición: debe poder garantizarse factor 2. Se comprueba contra
-        #    el tamaño del primer bloque (o 0 si el archivo es vacío); si no hay
-        #    2 nodos elegibles, se rechaza la subida antes de crear nada.
-        probe_size = len(chunks[0]) if chunks else 0
+    def _create(
+        self, user: User, directory: Directory, filename: str, source: BinaryIO
+    ) -> UploadResult:
+        """Sube un archivo que no existía."""
+        nodes = self._writer.eligible_nodes()
         try:
-            self._placement.place_block(node_snapshot, 0, probe_size)
+            self._writer.check_capacity(nodes, _stream_size(source))
         except NotEnoughEligibleNodesError as error:
-            raise UploadFailedError(
-                "No es posible almacenar el archivo: no hay suficientes DataNodes "
-                "disponibles para garantizar el factor de replicación 2."
-            ) from error
+            raise UploadFailedError(_NOT_ENOUGH_NODES) from error
 
-        # 5. Crear y confirmar el archivo en estado UPLOADING. Se persiste de
-        #    inmediato para que, si la subida de bloques falla después, el
-        #    archivo exista de forma durable y pueda marcarse FAILED y limpiarse.
-        file = self._files.create(
-            name=filename,
-            directory_id=directory.id,
-            owner_id=user.id,
-            permissions=0o640,
-        )
-        self._session.commit()
+        # Se confirma en UPLOADING antes de enviar bloques: si algo falla después,
+        # el archivo existe de forma durable y se puede descartar.
+        try:
+            file = self._files.create(
+                name=filename,
+                directory_id=directory.id,
+                owner_id=user.id,
+                permissions=0o640,
+            )
+            self._session.commit()
+        except IntegrityError as error:
+            # Otro PUT con el mismo nombre ganó la carrera.
+            self._session.rollback()
+            raise FileAlreadyExistsError(filename) from error
         self._session.refresh(file)
 
         try:
-            total_size = self._store_blocks(file, chunks, node_snapshot)
-        except (BlockSendError, NotEnoughEligibleNodesError) as error:
-            # Algo falló: marcar el archivo como FAILED y limpiar sus bloques.
-            self._mark_failed_and_cleanup(file)
-            raise UploadFailedError(
-                f"La subida del archivo {filename!r} falló: {error}"
-            ) from error
+            stored = self._writer.store_version(file.id, file.current_version, source, nodes)
+        except Exception as error:
+            self._session.rollback()
+            self._discard_failed_file(file)
+            if isinstance(error, (BlockSendError, NotEnoughEligibleNodesError)):
+                raise UploadFailedError(
+                    f"La subida del archivo {filename!r} falló: {error}"
+                ) from error
+            raise
 
-        # 6. Todos los bloques quedaron con sus dos réplicas: archivo AVAILABLE.
-        file.size_bytes = total_size
+        file.size_bytes = stored.size_bytes
         file.status = FileStatus.AVAILABLE
         self._session.commit()
-        self._session.refresh(file)
+        logger.info(
+            "Archivo %r subido (%d bytes, %d bloques).",
+            filename, stored.size_bytes, stored.block_count,
+        )
+        return UploadResult(
+            file_id=file.id,
+            name=file.name,
+            size_bytes=stored.size_bytes,
+            block_count=stored.block_count,
+        )
+
+    def _discard_failed_file(self, file: File) -> None:
+        """Marca la subida como FAILED, libera el nombre y borra sus bloques.
+
+        Lo que no se pueda borrar ahora (un nodo caído) lo termina la limpieza.
+        """
+        try:
+            file.status = FileStatus.FAILED
+            self._session.commit()
+            DeleteService(self._session).purge(file)
+        except Exception:
+            self._session.rollback()
+            logger.exception(
+                "No se pudo limpiar la subida fallida del archivo %d; la limpieza lo reintentará.",
+                file.id,
+            )
+
+    # ------------------------------------------------------- PUT con sobrescritura
+
+    def _overwrite(self, user: User, file: File, source: BinaryIO) -> UploadResult:
+        """Reemplaza el contenido de un archivo existente de forma segura."""
+        try:
+            self._access.require_file_permission(user, file, Action.WRITE)
+        except FileAccessDeniedError as error:
+            raise UploadPermissionError(file.name) from error
+
+        nodes = self._writer.eligible_nodes()
+        try:
+            self._writer.check_capacity(nodes, _stream_size(source))
+        except NotEnoughEligibleNodesError as error:
+            raise UploadFailedError(_NOT_ENOUGH_NODES) from error
+
+        # El lock impide que alguien lea, escriba o borre el archivo mientras se
+        # reemplaza. Lanza FileLockedError (423) si otra sesión ya lo tiene.
+        lock = self._locks.acquire(file, user.id, None)
+        self._session.commit()
+
+        try:
+            stored = self._store_new_version(file, source, nodes, lock)
+        finally:
+            self._locks.release_lock(lock)
+            self._session.commit()
 
         return UploadResult(
             file_id=file.id,
             name=file.name,
-            size_bytes=total_size,
-            block_count=len(chunks),
+            size_bytes=stored.size_bytes,
+            block_count=stored.block_count,
+            overwritten=True,
         )
 
-    def _split_into_blocks(self, content: bytes) -> list[bytes]:
-        """Divide el contenido en trozos del tamaño de bloque configurado."""
-        size = self._block_size_bytes
-        if not content:
-            return []
-        return [content[i : i + size] for i in range(0, len(content), size)]
+    def _store_new_version(self, file: File, source: BinaryIO, nodes, lock) -> StoredVersion:
+        """Guarda la versión nueva, la activa y borra la vieja."""
+        old_version = file.current_version
+        new_version = self._blocks.next_version(file.id, old_version)
 
-    def _store_blocks(
-        self, file: File, chunks: list[bytes], nodes: list[EligibleNode]
-    ) -> int:
-        """Cifra, coloca y envía cada bloque a sus dos réplicas. Devuelve el tamaño total."""
-        total_size = 0
-        for index, chunk in enumerate(chunks):
-            total_size += len(chunk)
-
-            # Cifrar el bloque y calcular el checksum sobre el contenido cifrado.
-            ciphertext = self._cipher.encrypt(chunk)
-            checksum = hashlib.sha256(ciphertext).hexdigest()
-
-            # Elegir los dos DataNodes (PRIMARY y BACKUP) para este bloque.
-            placements = self._placement.place_block(nodes, index, len(ciphertext))
-
-            # Identificador opaco del bloque, generado por el ControlNode. Se
-            # guarda en la base de datos como storage_key para poder pedir,
-            # borrar o replicar el bloque más adelante.
-            block_id = uuid.uuid4().hex
-
-            block = self._blocks.create_block(
-                file_id=file.id,
-                block_index=index,
-                version=file.current_version,
-                used_size_bytes=len(chunk),
-                checksum=checksum,
-                storage_key=block_id,
-            )
-
-            for placement in placements:
-                node = self._datanodes.get_by_id(placement.datanode_id)
-                self._block_client.send_block(
-                    host=node.host,
-                    port=node.port,
-                    block_id=block_id,
-                    checksum=checksum,
-                    content=ciphertext,
-                )
-                self._blocks.add_location(block.id, placement.datanode_id, placement.role)
-
-            self._blocks.mark_block_committed(block)
-            # Confirma el bloque y sus ubicaciones antes de pasar al siguiente,
-            # para que el progreso quede persistido de forma incremental.
+        def renew_lock() -> None:
+            # Una subida grande no debe perder el lock a mitad de camino.
+            self._locks.renew(lock)
             self._session.commit()
 
-        return total_size
+        try:
+            stored = self._writer.store_version(
+                file.id, new_version, source, nodes, on_block_stored=renew_lock
+            )
+        except Exception as error:
+            self._session.rollback()
+            self._writer.discard_version(file.id, new_version)
+            if isinstance(error, (BlockSendError, NotEnoughEligibleNodesError)):
+                raise UploadFailedError(
+                    f"No se pudo sobrescribir {file.name!r} (la versión anterior "
+                    f"sigue intacta): {error}"
+                ) from error
+            raise
 
-    def _mark_failed_and_cleanup(self, file: File) -> None:
-        """Marca el archivo como FAILED tras un fallo de subida.
-
-        El archivo queda FAILED (no visible como disponible). Los bloques ya
-        creados se conservan en metadatos como parte del archivo fallido; una
-        limpieza más profunda de bloques huérfanos en los DataNodes se aborda
-        junto con la eliminación de archivos.
-        """
-        file.status = FileStatus.FAILED
+        file.current_version = new_version
+        file.size_bytes = stored.size_bytes
         self._session.commit()
+        logger.info(
+            "Archivo %r sobrescrito: versión %d activa (%d bytes, %d bloques).",
+            file.name, new_version, stored.size_bytes, stored.block_count,
+        )
+        self._writer.discard_version(file.id, old_version)
+        return stored

@@ -39,12 +39,14 @@ class LockService:
         self._session = session
         self._timeout = timedelta(seconds=lock_timeout_seconds)
 
-    def acquire(self, file: File, user_id: int, handle_id: int) -> FileLock:
+    def acquire(self, file: File, user_id: int, handle_id: int | None) -> FileLock:
         """Toma el lock de escritura del archivo para un handle.
 
         Bloquea la fila del archivo mientras decide (SELECT ... FOR UPDATE), así
         dos sesiones que piden el lock al mismo tiempo no pueden ganar las dos.
-        Lanza FileLockedError si otra sesión tiene un lock vigente.
+        Lanza FileLockedError si otra sesión tiene un lock vigente. Con
+        ``handle_id=None`` el lock no pertenece a un handle: lo usa el PUT con
+        sobrescritura mientras reemplaza el archivo.
         """
         self._session.execute(select(File.id).where(File.id == file.id).with_for_update())
 
@@ -85,10 +87,11 @@ class LockService:
     def ensure_not_locked(self, file_id: int, handle_id: int | None = None) -> None:
         """Falla si otra sesión tiene el lock vigente.
 
-        Si ``handle_id`` es el dueño del lock, no cuenta como bloqueo.
+        Si ``handle_id`` es el dueño del lock, no cuenta como bloqueo. Un lock
+        sin handle (el que toma un PUT con sobrescritura) bloquea a todos.
         """
         lock = self.active_lock(file_id)
-        if lock is not None and lock.handle_id != handle_id:
+        if lock is not None and (handle_id is None or lock.handle_id != handle_id):
             raise FileLockedError(str(file_id))
 
     def holds_lock(self, file_id: int, handle_id: int) -> FileLock | None:
@@ -115,3 +118,8 @@ class LockService:
         """Borra los locks vencidos. Devuelve cuántos se borraron."""
         result = self._session.execute(delete(FileLock).where(FileLock.expires_at <= utcnow()))
         return result.rowcount or 0
+
+    def release_lock(self, lock: FileLock) -> None:
+        """Libera un lock concreto (por ejemplo, el de un PUT con sobrescritura)."""
+        self._session.execute(delete(FileLock).where(FileLock.id == lock.id))
+        self._session.flush()

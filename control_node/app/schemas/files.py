@@ -11,6 +11,8 @@ class UploadResponse(BaseModel):
     size_bytes: int
     block_count: int
     status: str = "AVAILABLE"
+    # True si reemplazó un archivo que ya existía (PUT con overwrite).
+    overwritten: bool = False
 
 
 class DeleteFileRequest(BaseModel):

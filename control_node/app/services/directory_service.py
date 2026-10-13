@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.filesystem import Directory, File
 from app.models.user import User
-from app.repositories.acl_repository import RESOURCE_DIRECTORY
+from app.repositories.acl_repository import RESOURCE_DIRECTORY, AclRepository
 from app.repositories.directory_repository import DirectoryRepository
 from app.repositories.file_repository import FileRepository
 from app.security.permissions import Action
@@ -160,5 +160,7 @@ class DirectoryService:
         ):
             raise DirectoryNotEmptyError(path)
 
+        # Sus ACL se borran con él, para no dejar permisos sueltos.
+        AclRepository(self._session).delete_for_resource(RESOURCE_DIRECTORY, directory.id)
         self._directories.delete(directory)
         self._session.commit()

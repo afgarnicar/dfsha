@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from app.config import get_settings
+from app.services import datanode_http
 from shared.constants import INTERNAL_API_KEY_HEADER
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,9 @@ class BlockFetcher:
         limits = httpx.Limits(max_connections=self._max_parallel)
         # La credencial interna se envía en todas las descargas a los DataNodes.
         headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
-        async with httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, limits=limits, headers=headers, verify=datanode_http.verify()
+        ) as client:
             tasks = [
                 asyncio.create_task(self._fetch_with_limit(client, semaphore, plan))
                 for plan in plans
@@ -147,7 +150,7 @@ class BlockFetcher:
         Devuelve el tamaño en bytes si salió bien y el checksum coincide, o un
         texto con el motivo del fallo. Si falla, borra lo que alcanzó a escribir.
         """
-        url = f"http://{replica.host}:{replica.port}/blocks/{plan.storage_key}"
+        url = datanode_http.url(replica.host, replica.port, f"/blocks/{plan.storage_key}")
         digest = hashlib.sha256()
         size = 0
         try:

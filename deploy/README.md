@@ -11,8 +11,10 @@ Guía para montar el sistema en 4 instancias EC2 del Learner Lab de AWS Academy:
 
 Las 4 VMs se comunican por la **red privada** de AWS (IP privadas 172.31.x.x).
 El cliente solo habla con Nginx en la VM1, por **HTTPS** (certificado
-autofirmado). Los DataNodes no quedan públicos y solo aceptan peticiones que
-traigan la clave interna `X-DFSHA-API-Key`.
+autofirmado). Los DataNodes no quedan públicos, también hablan solo **HTTPS**
+(entre ControlNode y DataNodes y entre DataNodes) y solo aceptan peticiones que
+traigan la clave interna `X-DFSHA-API-Key`. El certificado interno se deriva de
+esa misma clave, así que no hay que crear ni copiar certificados entre VMs.
 
 ---
 
@@ -109,7 +111,7 @@ cp .env.example .env
 sed -i 's/^NODE_ID=.*/NODE_ID=DN1/' .env
 sed -i 's/^INTERNAL_API_KEY=.*/INTERNAL_API_KEY=<CLAVE-INTERNA>/' .env
 docker compose up -d --build
-curl http://localhost:8000/health
+curl -k https://localhost:8000/health
 ```
 
 Debe responder `{"node_id":"DN1","status":"ok",...}`.
@@ -127,7 +129,17 @@ Abre el `.env` con `nano .env` y cambia:
 2. `JWT_SECRET`: genéralo con `openssl rand -hex 32`. `INTERNAL_API_KEY`: la **misma** clave interna que pusiste en los DataNodes.
 3. `DATANODES`: las **IP privadas** de las VM2, VM3 y VM4.
 
-Guarda con `Ctrl+O`, Enter, `Ctrl+X`. Después:
+Guarda con `Ctrl+O`, Enter, `Ctrl+X`. Después genera un certificado nuevo para
+Nginx (el del repositorio es solo para pruebas locales, su llave es pública) y
+dile a git que no lo tome como un cambio:
+
+```bash
+openssl req -x509 -nodes -newkey rsa:2048 -days 365 -subj "/CN=dfsha" \
+  -keyout ~/dfsha/nginx/certs/dfsha.key -out ~/dfsha/nginx/certs/dfsha.crt
+git -C ~/dfsha update-index --skip-worktree nginx/certs/dfsha.key nginx/certs/dfsha.crt
+```
+
+Y levanta todo:
 
 ```bash
 docker compose build
@@ -146,9 +158,10 @@ docker compose up -d
 bash ~/dfsha/deploy/prueba-despliegue.sh
 ```
 
-Debe decir `6 pasaron, 0 fallaron`: HTTP redirige a HTTPS, el ControlNode
-responde, ve los 3 DataNodes ONLINE, y un archivo de 100 MB sube y baja
-idéntico pasando por las VMs.
+Debe decir `10 pasaron, 0 fallaron`: HTTP redirige a HTTPS, el ControlNode
+responde y ve los 3 DataNodes ONLINE, los DataNodes solo aceptan HTTPS, un
+archivo de 100 MB sube y baja idéntico pasando por las VMs, y se puede
+reemplazar con overwrite.
 
 Prueba también desde tu computador, con la IP pública de la VM1. El `-k` es
 porque el certificado es autofirmado:
@@ -195,8 +208,12 @@ En la VM1, si hay migraciones nuevas, antes del `up`:
 
 ## Notas de seguridad
 
-- El certificado de `nginx/certs/` está en el repositorio y es autofirmado, para
-  uso académico. Como su llave privada es pública en GitHub, para una entrega
-  más seria se genera uno nuevo en la VM1 y no se sube a git.
+- El certificado de `nginx/certs/` que está en el repositorio es solo para
+  pruebas locales (su llave es pública en GitHub). En la VM1 se reemplaza por
+  uno nuevo en el paso 7, que no se sube a git. Es autofirmado: por eso el
+  cliente y curl no verifican el certificado (uso académico).
+- El HTTPS interno usa un certificado derivado de `INTERNAL_API_KEY`: el
+  ControlNode solo confía en DataNodes que conozcan esa clave. Si se cambia la
+  clave, hay que cambiarla en las 4 VMs al mismo tiempo.
 - Deja el puerto 22 solo para las IP del equipo (`My IP`) y nunca abras el 8000
   de los DataNodes a `0.0.0.0/0`.

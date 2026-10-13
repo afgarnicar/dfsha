@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from app.config import get_settings
+from app.services import datanode_http
 from shared.constants import INTERNAL_API_KEY_HEADER
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class BlockClient:
 
         Lanza ``BlockSendError`` si tras todos los intentos no se pudo almacenar.
         """
-        url = f"http://{host}:{port}/blocks"
+        url = datanode_http.url(host, port, "/blocks")
         timeout = httpx.Timeout(
             _TRANSFER_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS
         )
@@ -52,7 +53,7 @@ class BlockClient:
 
         for attempt in range(1, self._max_retries + 1):
             try:
-                with httpx.Client(timeout=timeout) as client:
+                with httpx.Client(timeout=timeout, verify=datanode_http.verify()) as client:
                     response = client.post(
                         url,
                         data={"block_id": block_id, "checksum": checksum},

@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from app.config import get_settings
+from app.services import datanode_http
 from shared.constants import INTERNAL_API_KEY_HEADER
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,14 @@ class ReplicationOrderClient:
 
         Lanza ``ReplicationOrderError`` si la orden no se completa con éxito.
         """
-        url = f"http://{source_host}:{source_port}/blocks/{storage_key}/replicate"
+        url = datanode_http.url(
+            source_host, source_port, f"/blocks/{storage_key}/replicate"
+        )
         timeout = httpx.Timeout(
             _TRANSFER_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS
         )
         try:
-            with httpx.Client(timeout=timeout) as client:
+            with httpx.Client(timeout=timeout, verify=datanode_http.verify()) as client:
                 response = client.post(
                     url,
                     json={"target_host": target_host, "target_port": target_port},

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.storage import Block
 from app.repositories.block_repository import BlockRepository
+from app.services import datanode_http
 from shared.constants import INTERNAL_API_KEY_HEADER
 
 logger = logging.getLogger(__name__)
@@ -43,11 +44,13 @@ class ReplicaEraser:
         timeout = httpx.Timeout(_REQUEST_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
         headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
 
-        with httpx.Client(timeout=timeout, headers=headers) as client:
+        with httpx.Client(
+            timeout=timeout, headers=headers, verify=datanode_http.verify()
+        ) as client:
             for block in blocks:
                 for location in list(block.locations):
                     node = location.datanode
-                    url = f"http://{node.host}:{node.port}/blocks/{block.storage_key}"
+                    url = datanode_http.url(node.host, node.port, f"/blocks/{block.storage_key}")
                     try:
                         response = client.delete(url)
                         deleted = response.status_code == 204
