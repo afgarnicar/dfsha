@@ -15,11 +15,14 @@ Ejemplos de uso:
     python -m client.cli files write <handle> 0 --text "Hola"
     python -m client.cli files read <handle> 0 4
     python -m client.cli files close <handle>
+    python -m client.cli access group-create equipo
+    python -m client.cli access chgrp equipo /home/andres/documentos
+    python -m client.cli access acl-set user:juan r-x /home/andres/documentos
 """
 
 import typer
 
-from client.commands import auth, files, filesystem
+from client.commands import access, auth, files, filesystem
 from client.session import load_session, save_session
 
 app = typer.Typer(help="Cliente de línea de comandos del sistema de archivos distribuido DFSha.")
@@ -28,6 +31,7 @@ app = typer.Typer(help="Cliente de línea de comandos del sistema de archivos di
 app.add_typer(auth.app, name="auth")
 app.add_typer(filesystem.app, name="fs")
 app.add_typer(files.app, name="files")
+app.add_typer(access.app, name="access")
 
 
 @app.command("set-url")

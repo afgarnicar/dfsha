@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.services import datanode_http
+
 # Tiempo máximo de espera por cada verificación. Si un nodo tarda más que esto,
 # la verificación cuenta como fallida.
 HEALTH_CHECK_TIMEOUT_SECONDS = 3.0
@@ -26,7 +28,7 @@ class HealthCheckTarget:
     @property
     def health_url(self) -> str:
         """URL del endpoint de salud del nodo."""
-        return f"http://{self.host}:{self.port}/health"
+        return datanode_http.url(self.host, self.port, "/health")
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,9 @@ class DataNodeHealthClient:
         self, targets: list[HealthCheckTarget]
     ) -> list[HealthCheckResult]:
         """Verifica todos los nodos al mismo tiempo y devuelve un resultado por nodo."""
-        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout_seconds, verify=datanode_http.verify()
+        ) as client:
             return await asyncio.gather(
                 *(self._check_one(client, target) for target in targets)
             )

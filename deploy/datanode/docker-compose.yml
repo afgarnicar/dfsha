@@ -11,7 +11,9 @@
 # así sobreviven si el contenedor se borra o se reconstruye.
 #
 # El puerto 8000 queda publicado en la VM, pero el security group de AWS solo
-# debe permitir que lo alcancen el ControlNode y los otros DataNodes.
+# debe permitir que lo alcancen el ControlNode y los otros DataNodes. Sirve
+# HTTPS con el certificado interno, que se deriva de INTERNAL_API_KEY (ver
+# shared/internal_tls.py); por eso esa clave debe ser igual en todas las VMs.
 
 services:
   data_node:
@@ -20,8 +22,10 @@ services:
     env_file: .env
     environment:
       STORAGE_ROOT: /data/dfsha
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["python", "run.py"]
     ports:
       - "8000:8000"
     volumes:
       - /data/dfsha:/data/dfsha
+      # Código compartido (certificado interno para HTTPS entre nodos).
+      - ../../shared:/app/shared:ro

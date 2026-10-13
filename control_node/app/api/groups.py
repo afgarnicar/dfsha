@@ -1,7 +1,8 @@
 """Endpoints de gestión de grupos y membresías.
 
-Todos los endpoints requieren autenticación. Por ahora cualquier usuario
-autenticado puede crear grupos y agregar miembros.
+Todos los endpoints requieren autenticación. Cualquier usuario autenticado
+puede crear grupos (y queda como miembro); solo un miembro de un grupo puede
+agregarle otros miembros.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,6 +17,7 @@ from app.services.group_service import (
     GroupNotFoundError,
     GroupService,
     MemberUserNotFoundError,
+    NotGroupMemberError,
 )
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -27,10 +29,10 @@ def create_group(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> GroupResponse:
-    """Crea un grupo nuevo."""
+    """Crea un grupo nuevo; quien lo crea queda como miembro."""
     service = GroupService(session)
     try:
-        group = service.create_group(body.name)
+        group = service.create_group(body.name, current_user.id)
     except GroupAlreadyExistsError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -56,14 +58,19 @@ def add_member(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    """Agrega un usuario a un grupo."""
+    """Agrega un usuario a un grupo. Solo un miembro del grupo puede hacerlo."""
     service = GroupService(session)
     try:
-        service.add_member(group_id, body.user_id)
+        service.add_member(group_id, body.user_id, current_user.id)
     except GroupNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="El grupo indicado no existe.",
+        )
+    except NotGroupMemberError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo un miembro del grupo puede agregarle miembros.",
         )
     except MemberUserNotFoundError:
         raise HTTPException(

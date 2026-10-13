@@ -41,6 +41,8 @@ services:
       - "8001:8000"
     volumes:
       - dn1_data:/data/dfsha
+      # shared/ trae el certificado interno (HTTPS entre nodos).
+      - ./shared:/app/shared:ro
 
   data_node_2:
     build: ./data_node
@@ -52,6 +54,8 @@ services:
       - "8002:8000"
     volumes:
       - dn2_data:/data/dfsha
+      # shared/ trae el certificado interno (HTTPS entre nodos).
+      - ./shared:/app/shared:ro
 
   data_node_3:
     build: ./data_node
@@ -63,6 +67,8 @@ services:
       - "8003:8000"
     volumes:
       - dn3_data:/data/dfsha
+      # shared/ trae el certificado interno (HTTPS entre nodos).
+      - ./shared:/app/shared:ro
 
   nginx:
     image: nginx:1.27-alpine

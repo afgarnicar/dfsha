@@ -26,6 +26,9 @@ def _fail(error: ApiError) -> None:
 def put(
     local_path: str = typer.Argument(..., help="Archivo local a subir."),
     directory_path: str = typer.Argument(..., help="Directorio destino en el DFS."),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Reemplaza el archivo si ya existe (de forma segura)."
+    ),
 ) -> None:
     """Sube un archivo local al directorio indicado del sistema distribuido."""
     source = Path(local_path)
@@ -38,13 +41,14 @@ def put(
             result = _client().request(
                 "POST",
                 "/files",
-                data={"directory_path": directory_path},
+                data={"directory_path": directory_path, "overwrite": str(overwrite).lower()},
                 files={"file": (source.name, handle, "application/octet-stream")},
             )
     except ApiError as error:
         _fail(error)
+    action = "Reemplazado" if result.get("overwritten") else "Subido"
     typer.secho(
-        f"Subido: {source.name} -> {directory_path} "
+        f"{action}: {source.name} -> {directory_path} "
         f"({result['size_bytes']} bytes, {result['block_count']} bloque(s)).",
         fg=typer.colors.GREEN,
     )
@@ -53,7 +57,9 @@ def put(
 @app.command()
 def get(
     remote_path: str = typer.Argument(..., help="Ruta del archivo en el DFS."),
-    output: str = typer.Option(None, "--output", "-o", help="Ruta local de destino."),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Ruta local de destino ('-' para mostrarlo en pantalla)."
+    ),
 ) -> None:
     """Descarga un archivo del sistema distribuido."""
     destination = output or os.path.basename(remote_path)
@@ -63,7 +69,8 @@ def get(
         )
     except ApiError as error:
         _fail(error)
-    typer.secho(f"Descargado: {remote_path} -> {destination}.", fg=typer.colors.GREEN)
+    if destination != "-":
+        typer.secho(f"Descargado: {remote_path} -> {destination}.", fg=typer.colors.GREEN)
 
 
 @app.command()

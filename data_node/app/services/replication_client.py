@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.security import INTERNAL_API_KEY_HEADER
 from app.storage.block_store import BlockNotFoundError, BlockStore
 from app.storage.checksum import file_sha256
+from shared.internal_tls import client_verify, datanode_url
 
 # Tiempo máximo para conectar con el destino.
 CONNECT_TIMEOUT_SECONDS = 5.0
@@ -43,7 +44,7 @@ class ReplicationResult:
 
 
 class ReplicationClient:
-    """Copia bloques locales hacia otros DataNodes por HTTP."""
+    """Copia bloques locales hacia otros DataNodes por HTTPS."""
 
     def __init__(self, store: BlockStore) -> None:
         self._store = store
@@ -60,13 +61,15 @@ class ReplicationClient:
 
         checksum = file_sha256(path)
         target = f"{target_host}:{target_port}"
-        url = f"http://{target}/blocks"
+        url = datanode_url(target_host, target_port, "/blocks")
         timeout = httpx.Timeout(TRANSFER_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
 
         try:
             # httpx lee el archivo por partes al armar el multipart, sin cargarlo
             # completo en memoria.
-            with path.open("rb") as content, httpx.Client(timeout=timeout) as client:
+            with path.open("rb") as content, httpx.Client(
+                timeout=timeout, verify=client_verify(get_settings().internal_api_key)
+            ) as client:
                 response = client.post(
                     url,
                     data={"block_id": block_id, "checksum": checksum},

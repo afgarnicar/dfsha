@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.repositories.block_repository import BlockRepository
 from app.repositories.datanode_repository import DataNodeRepository
+from app.services import datanode_http
 from shared.constants import INTERNAL_API_KEY_HEADER
 from shared.enums import NodeStatus
 
@@ -46,11 +47,13 @@ class OrphanCleanupService:
         timeout = httpx.Timeout(_REQUEST_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
         headers = {INTERNAL_API_KEY_HEADER: get_settings().internal_api_key}
 
-        with httpx.Client(timeout=timeout, headers=headers) as client:
+        with httpx.Client(
+            timeout=timeout, headers=headers, verify=datanode_http.verify()
+        ) as client:
             for node in self._datanodes.list_all():
                 if node.status != NodeStatus.ONLINE:
                     continue
-                base = f"http://{node.host}:{node.port}/blocks"
+                base = datanode_http.url(node.host, node.port, "/blocks")
                 try:
                     response = client.get(base)
                     response.raise_for_status()
