@@ -13,6 +13,7 @@ bloque a medio escribir con el nombre definitivo.
 import hashlib
 import os
 import re
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -47,6 +48,15 @@ class ChecksumMismatchError(ValueError):
         super().__init__(f"checksum esperado {expected}, calculado {actual}")
         self.expected = expected
         self.actual = actual
+
+
+@dataclass(frozen=True)
+class BlockInfo:
+    """Datos de un bloque guardado, para listarlo."""
+
+    block_id: str
+    size_bytes: int
+    age_seconds: int
 
 
 @dataclass(frozen=True)
@@ -162,3 +172,25 @@ class BlockStore:
         except FileNotFoundError:
             return False
         return True
+
+    def list_blocks(self) -> list[BlockInfo]:
+        """Lista los bloques guardados, con su tamaño y hace cuánto se escribieron.
+
+        Los archivos temporales (escrituras en curso) no se incluyen.
+        """
+        now = time.time()
+        blocks: list[BlockInfo] = []
+        for path in self._root.iterdir():
+            if path.name.startswith(_TEMP_PREFIX) or not path.is_file():
+                continue
+            if not _BLOCK_ID_PATTERN.match(path.name):
+                continue
+            stat = path.stat()
+            blocks.append(
+                BlockInfo(
+                    block_id=path.name,
+                    size_bytes=stat.st_size,
+                    age_seconds=max(int(now - stat.st_mtime), 0),
+                )
+            )
+        return blocks

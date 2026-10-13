@@ -7,7 +7,10 @@ En cada pasada:
 - borra las versiones viejas de archivos modificados con write (y las de un
   write que falló);
 - cierra los handles vencidos y borra los locks vencidos, por si el cliente
-  desapareció sin hacer close.
+  desapareció sin hacer close;
+- crea las copias que les falten a los bloques con menos de 2 réplicas vivas
+  (si cuando cayó un nodo no había otro disponible);
+- borra de los DataNodes las copias huérfanas que ya nadie registra.
 """
 
 import asyncio
@@ -19,6 +22,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.services.delete_service import DeleteService
 from app.services.handle_service import HandleService
+from app.services.orphan_cleanup_service import OrphanCleanupService
+from app.services.rereplication_service import RereplicationService
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,14 @@ class CleanupWorker:
             stale = deletes.purge_stale_versions()
             if stale:
                 logger.info("Limpieza: %d bloque(s) de versiones viejas borrados.", stale)
-            return deletes.purge_pending()
+            completed = deletes.purge_pending()
+
+            restored = RereplicationService(session).restore_under_replicated()
+            if restored:
+                logger.info("Limpieza: %d copia(s) restauradas en bloques con una sola réplica.", restored)
+            orphans = OrphanCleanupService(session, settings.orphan_grace_seconds).run()
+            if orphans:
+                logger.info("Limpieza: %d copia(s) huérfanas borradas de los DataNodes.", orphans)
+            return completed
         finally:
             session.close()

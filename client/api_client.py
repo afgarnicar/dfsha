@@ -10,6 +10,7 @@ sigue cifrada; solo no se valida la identidad del servidor contra una autoridad
 certificadora.
 """
 
+import sys
 from typing import Any
 
 import httpx
@@ -60,7 +61,7 @@ class ApiClient:
         try:
             with self._client() as client:
                 if stream_to is not None:
-                    return self._download(client, method, path, params, stream_to)
+                    return self._download(client, method, path, params, stream_to, json)
                 response = client.request(
                     method,
                     path,
@@ -78,12 +79,19 @@ class ApiClient:
 
         return self._handle(response)
 
-    def _download(self, client, method, path, params, stream_to) -> None:
-        """Descarga una respuesta binaria a un archivo."""
-        with client.stream(method, path, params=params, headers=self._headers()) as response:
+    def _download(self, client, method, path, params, stream_to, json=None) -> None:
+        """Descarga una respuesta binaria a un archivo (o a la salida estándar con "-")."""
+        with client.stream(
+            method, path, params=params, json=json, headers=self._headers()
+        ) as response:
             if response.status_code >= 400:
                 response.read()
                 self._handle(response)
+            if stream_to == "-":
+                for chunk in response.iter_bytes():
+                    sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                return
             with open(stream_to, "wb") as target:
                 for chunk in response.iter_bytes():
                     target.write(chunk)

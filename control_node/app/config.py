@@ -111,6 +111,9 @@ class Settings:
     cleanup_interval_seconds: int
     # Tiempo sin uso tras el cual vence un handle de lectura (open en modo READ).
     handle_timeout_seconds: int
+    # Antigüedad mínima de una copia sin registrar en los metadatos para
+    # considerarla huérfana y borrarla del DataNode.
+    orphan_grace_seconds: int
 
     # DataNodes esperados por el ControlNode, leídos de la configuración.
     datanodes: tuple[DataNodeConfig, ...]
@@ -145,5 +148,6 @@ def get_settings() -> Settings:
         temp_root=os.getenv("TEMP_ROOT", "/tmp/dfsha"),
         cleanup_interval_seconds=_get_int("CLEANUP_INTERVAL_SECONDS", 30),
         handle_timeout_seconds=_get_int("HANDLE_TIMEOUT_SECONDS", 300),
+        orphan_grace_seconds=_get_int("ORPHAN_GRACE_SECONDS", 900),
         datanodes=_parse_datanodes(os.getenv("DATANODES", "")),
     )

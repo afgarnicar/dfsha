@@ -15,7 +15,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.responses import StreamingResponse
 
 from app.dependencies import get_block_store, get_replication_client
-from app.schemas import ReplicateRequest, ReplicateResponse, StoredBlockResponse
+from app.schemas import (
+    BlockInfoResponse,
+    BlockListResponse,
+    ReplicateRequest,
+    ReplicateResponse,
+    StoredBlockResponse,
+)
 from app.security import require_internal_api_key
 from app.services.replication_client import ReplicationClient, ReplicationTargetError
 from app.storage.block_store import (
@@ -96,6 +102,30 @@ def store_block(
 
     return StoredBlockResponse(
         block_id=stored.block_id, size_bytes=stored.size_bytes, checksum=stored.checksum
+    )
+
+
+@router.get("", response_model=BlockListResponse)
+def list_blocks(store: BlockStore = Depends(get_block_store)) -> BlockListResponse:
+    """Lista los bloques guardados en este nodo.
+
+    Lo usa el ControlNode para encontrar copias huérfanas: bloques que siguen en
+    el disco pero que ya no aparecen en los metadatos (por ejemplo, porque el
+    nodo estuvo caído y sus bloques se re-replicaron en otro lado).
+    """
+    try:
+        blocks = store.list_blocks()
+    except OSError as error:
+        raise _disk_error(error)
+    return BlockListResponse(
+        blocks=[
+            BlockInfoResponse(
+                block_id=block.block_id,
+                size_bytes=block.size_bytes,
+                age_seconds=block.age_seconds,
+            )
+            for block in blocks
+        ]
     )
 
 

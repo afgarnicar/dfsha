@@ -28,3 +28,17 @@ class ReplicateResponse(BaseModel):
     target: str
     size_bytes: int
     checksum: str
+
+
+class BlockInfoResponse(BaseModel):
+    """Un bloque guardado en el DataNode."""
+
+    block_id: str
+    size_bytes: int
+    age_seconds: int
+
+
+class BlockListResponse(BaseModel):
+    """Bloques guardados en el DataNode."""
+
+    blocks: list[BlockInfoResponse]
