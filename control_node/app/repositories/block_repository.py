@@ -3,8 +3,9 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.filesystem import File
 from app.models.storage import Block, BlockLocation
-from shared.enums import BlockStatus, ReplicaRole
+from shared.enums import BlockStatus, FileStatus, ReplicaRole
 
 
 class BlockRepository:
@@ -90,6 +91,26 @@ class BlockRepository:
             .options(selectinload(Block.locations).selectinload(BlockLocation.datanode))
         )
         return list(self._session.scalars(statement).unique().all())
+
+    def list_current_blocks_of_available_files(self) -> list[Block]:
+        """Bloques de la versión actual de los archivos AVAILABLE, con sus réplicas."""
+        statement = (
+            select(Block)
+            .join(File, File.id == Block.file_id)
+            .where(File.status == FileStatus.AVAILABLE, Block.version == File.current_version)
+            .order_by(Block.file_id, Block.block_index)
+            .options(selectinload(Block.locations).selectinload(BlockLocation.datanode))
+        )
+        return list(self._session.scalars(statement).all())
+
+    def storage_keys_on_datanode(self, datanode_id: int) -> set[str]:
+        """Nombres de los bloques que, según los metadatos, tiene un DataNode."""
+        statement = (
+            select(Block.storage_key)
+            .join(BlockLocation, BlockLocation.block_id == Block.id)
+            .where(BlockLocation.datanode_id == datanode_id)
+        )
+        return set(self._session.scalars(statement).all())
 
     def set_location_role(self, location: BlockLocation, role: ReplicaRole) -> None:
         """Cambia el rol (PRIMARY/BACKUP) de una réplica."""

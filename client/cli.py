@@ -11,6 +11,10 @@ Ejemplos de uso:
     python -m client.cli fs mkdir /home/andres/documentos
     python -m client.cli files put ./informe.pdf /home/andres/documentos
     python -m client.cli files get /home/andres/documentos/informe.pdf
+    python -m client.cli files open /home/andres/documentos/notas.txt --mode write
+    python -m client.cli files write <handle> 0 --text "Hola"
+    python -m client.cli files read <handle> 0 4
+    python -m client.cli files close <handle>
 """
 
 import typer

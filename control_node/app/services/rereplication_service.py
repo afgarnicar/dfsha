@@ -12,7 +12,13 @@ factor 2:
    elegible, que entra como BACKUP.
 4. Si no hay ningún otro DataNode elegible al que copiar, deja el bloque con
    factor 1 y lo registra como advertencia: es una limitación física, no un
-   error; se restaurará cuando vuelva a haber nodos disponibles.
+   error. La revisión periódica (``restore_under_replicated``, que corre en la
+   limpieza cada pocos segundos) lo vuelve a intentar hasta que haya un nodo
+   disponible.
+
+Solo se re-replican los bloques de la versión actual de archivos AVAILABLE: las
+versiones viejas (de un write) y los archivos que se están borrando los quita la
+limpieza, así que copiarlos sería trabajo perdido.
 
 El ControlNode no mueve los bytes: le ordena al nodo que tiene la copia buena
 que la envíe al nodo destino.
@@ -30,7 +36,7 @@ from app.services.replication_order_client import (
     ReplicationOrderClient,
     ReplicationOrderError,
 )
-from shared.enums import NodeStatus, ReplicaRole
+from shared.enums import FileStatus, NodeStatus, ReplicaRole
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,8 @@ class RereplicationService:
             offline_datanode_id,
         )
         for block in affected:
+            if not self._is_live_block(block):
+                continue
             try:
                 self._rereplicate_block(block, offline_datanode_id)
             except ReplicationOrderError as error:
@@ -72,6 +80,74 @@ class RereplicationService:
                     block.storage_key,
                     error,
                 )
+
+    @staticmethod
+    def _is_live_block(block: Block) -> bool:
+        """Indica si el bloque es de la versión actual de un archivo disponible."""
+        file = block.file
+        return file.status == FileStatus.AVAILABLE and block.version == file.current_version
+
+    def restore_under_replicated(self) -> int:
+        """Revisa todos los bloques y les crea las copias que les falten.
+
+        Cubre los casos en que la re-replicación del momento de la caída no pudo
+        terminar (por ejemplo, porque no había otro nodo disponible). Devuelve
+        cuántas copias nuevas se crearon.
+        """
+        created = 0
+        for block in self._blocks.list_current_blocks_of_available_files():
+            # Una copia en un nodo SUSPECT todavía cuenta: puede ser una falla
+            # pasajera, y por eso existe el umbral antes de declarar OFFLINE.
+            # Solo se da por perdida la copia de un nodo OFFLINE.
+            alive = [loc for loc in block.locations if loc.datanode.status != NodeStatus.OFFLINE]
+            if len(alive) >= _TARGET_REPLICATION_FACTOR:
+                continue
+            live = [loc for loc in alive if loc.datanode.status == NodeStatus.ONLINE]
+            if not live:
+                continue
+            try:
+                if self._add_replica(block, live):
+                    created += 1
+            except ReplicationOrderError as error:
+                self._session.rollback()
+                logger.warning("No se pudo restaurar el bloque %s: %s", block.storage_key, error)
+        return created
+
+    def _add_replica(self, block: Block, live: list[BlockLocation]) -> bool:
+        """Copia el bloque desde una réplica viva a un nodo nuevo.
+
+        Si la PRIMARY quedó en un nodo caído, promueve la réplica viva a PRIMARY
+        y deja la caída como BACKUP. Devuelve False si no hay nodo destino.
+        """
+        target = self._choose_target(
+            block, exclude_datanode_ids={loc.datanode_id for loc in block.locations}
+        )
+        if target is None:
+            return False
+
+        source = live[0]
+        if source.role != ReplicaRole.PRIMARY:
+            for location in block.locations:
+                if location.role == ReplicaRole.PRIMARY:
+                    self._blocks.set_location_role(location, ReplicaRole.BACKUP)
+            self._blocks.set_location_role(source, ReplicaRole.PRIMARY)
+
+        source_node = self._datanodes.get_by_id(source.datanode_id)
+        self._order_client.order_replication(
+            source_host=source_node.host,
+            source_port=source_node.port,
+            storage_key=block.storage_key,
+            target_host=target.host,
+            target_port=target.port,
+        )
+        self._blocks.add_location(block.id, target.id, ReplicaRole.BACKUP)
+        self._session.commit()
+        logger.info(
+            "Bloque %s: copia restaurada en el nodo %s (revisión periódica).",
+            block.storage_key,
+            target.name,
+        )
+        return True
 
     def _rereplicate_block(self, block: Block, offline_datanode_id: int) -> None:
         """Restaura el factor 2 de un bloque concreto."""
