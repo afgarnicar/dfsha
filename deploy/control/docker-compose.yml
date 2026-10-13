@@ -1,0 +1,56 @@
+# Despliegue de la VM del ControlNode (VM1): ControlNode + PostgreSQL + Nginx.
+#
+# Se ejecuta desde esta carpeta (deploy/control) en la VM1:
+#   docker compose up -d --build
+#
+# Diferencias con el docker-compose.yml de desarrollo local:
+# - Los DataNodes NO corren aquí: están en sus propias VMs y el ControlNode los
+#   encuentra por su IP privada (variable DATANODES del .env).
+# - PostgreSQL y el ControlNode no publican puertos: solo Nginx queda expuesto
+#   (443 con HTTPS; el 80 solo redirige a HTTPS). El ControlNode y la base solo
+#   se ven dentro de la red de Docker.
+# - El código va dentro de la imagen (sin --reload); solo se monta la carpeta
+#   shared/, que la imagen del ControlNode no incluye.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dfsha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en el .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dfsha}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dfsha} -d ${POSTGRES_DB:-dfsha}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  control_node:
+    build: ../../control_node
+    restart: unless-stopped
+    env_file: .env
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Código compartido entre componentes (enums y constantes).
+      - ../../shared:/app/shared:ro
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - control_node
+
+volumes:
+  postgres_data:
