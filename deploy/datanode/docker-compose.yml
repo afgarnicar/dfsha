@@ -1,0 +1,27 @@
+# Despliegue de una VM de DataNode (VM2, VM3 o VM4).
+#
+# Se ejecuta desde esta carpeta (deploy/datanode) en cada VM de DataNode:
+#   docker compose up -d --build
+#
+# Cada VM corre un solo DataNode. Lo que cambia entre VMs es el NODE_ID del
+# .env (DN1, DN2 o DN3), que debe coincidir con la variable DATANODES de la VM
+# del ControlNode.
+#
+# Los bloques se guardan en /data/dfsha de la VM (no dentro del contenedor),
+# así sobreviven si el contenedor se borra o se reconstruye.
+#
+# El puerto 8000 queda publicado en la VM, pero el security group de AWS solo
+# debe permitir que lo alcancen el ControlNode y los otros DataNodes.
+
+services:
+  data_node:
+    build: ../../data_node
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STORAGE_ROOT: /data/dfsha
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - /data/dfsha:/data/dfsha
