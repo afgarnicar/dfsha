@@ -4,8 +4,12 @@ Cada cierto intervalo consulta el /health de todos los DataNodes registrados,
 aplica la regla de transición de estados (ONLINE, SUSPECT, OFFLINE) y guarda el
 resultado en la base de datos.
 
-Cuando un nodo pasa a OFFLINE se llama a ``on_node_offline``. Por ahora solo
-deja un registro en el log; la re-replicación automática se conectará ahí.
+Cuando un nodo pasa a OFFLINE se llama a ``on_node_offline`` (ahí se conecta la
+re-replicación automática). Ese aviso corre en un hilo aparte y en segundo
+plano: re-replicar puede tardar minutos copiando bloques, y si corriera en el
+mismo hilo que atiende las peticiones, todo el ControlNode se quedaría sin
+responder mientras tanto. Así el monitor sigue revisando los demás nodos y la
+API sigue atendiendo.
 """
 
 import asyncio
@@ -51,6 +55,9 @@ class NodeMonitorService:
         self._interval_seconds = interval_seconds
         self._failure_threshold = failure_threshold
         self._on_node_offline = on_node_offline
+        # Avisos de nodo caído que siguen corriendo en segundo plano. Se guardan
+        # para que no se pierdan antes de terminar.
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def run_forever(self) -> None:
         """Ejecuta verificaciones en ciclo hasta que la tarea sea cancelada.
@@ -84,7 +91,20 @@ class NodeMonitorService:
         nodes_gone_offline = await asyncio.to_thread(self._save_results, results)
 
         for datanode_id, name in nodes_gone_offline:
-            self._on_node_offline(datanode_id, name)
+            task = asyncio.create_task(
+                asyncio.to_thread(self._on_node_offline, datanode_id, name)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._finish_background_task)
+
+    def _finish_background_task(self, task: asyncio.Task) -> None:
+        """Quita el aviso terminado de la lista y registra si falló."""
+        self._background_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Falló el aviso de nodo caído en segundo plano.",
+                exc_info=task.exception(),
+            )
 
     def _load_targets(self) -> list[HealthCheckTarget]:
         """Lee de la base de datos la lista de nodos a verificar."""
