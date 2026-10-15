@@ -39,6 +39,16 @@ class LockService:
         self._session = session
         self._timeout = timedelta(seconds=lock_timeout_seconds)
 
+    def lock_file_row(self, file: File) -> None:
+        """Bloquea la fila del archivo hasta el fin de la transacción.
+
+        Se llama ANTES de escribir cualquier otra fila que apunte al archivo
+        (por ejemplo, el handle): insertar esa fila toma un candado compartido
+        sobre el archivo, y si dos sesiones lo hacen antes de pedir el candado
+        exclusivo, cada una espera a la otra (deadlock).
+        """
+        self._session.execute(select(File.id).where(File.id == file.id).with_for_update())
+
     def acquire(self, file: File, user_id: int, handle_id: int | None) -> FileLock:
         """Toma el lock de escritura del archivo para un handle.
 
@@ -48,7 +58,7 @@ class LockService:
         ``handle_id=None`` el lock no pertenece a un handle: lo usa el PUT con
         sobrescritura mientras reemplaza el archivo.
         """
-        self._session.execute(select(File.id).where(File.id == file.id).with_for_update())
+        self.lock_file_row(file)
 
         current = self.get_lock(file.id)
         if current is not None:
@@ -119,7 +129,10 @@ class LockService:
         result = self._session.execute(delete(FileLock).where(FileLock.expires_at <= utcnow()))
         return result.rowcount or 0
 
-    def release_lock(self, lock: FileLock) -> None:
-        """Libera un lock concreto (por ejemplo, el de un PUT con sobrescritura)."""
-        self._session.execute(delete(FileLock).where(FileLock.id == lock.id))
+    def release_lock(self, lock_id: int) -> None:
+        """Libera un lock concreto (por ejemplo, el de un PUT con sobrescritura).
+
+        Si ya no existe (se venció y la limpieza lo borró), no hace nada.
+        """
+        self._session.execute(delete(FileLock).where(FileLock.id == lock_id))
         self._session.flush()

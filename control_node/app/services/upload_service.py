@@ -228,11 +228,14 @@ class UploadService:
         # reemplaza. Lanza FileLockedError (423) si otra sesión ya lo tiene.
         lock = self._locks.acquire(file, user.id, None)
         self._session.commit()
+        # El id se guarda aparte: si el lock llegara a vencerse y la limpieza lo
+        # borrara, el objeto ya no se podría leer después de un rollback.
+        lock_id = lock.id
 
         try:
             stored = self._store_new_version(file, source, nodes, lock)
         finally:
-            self._locks.release_lock(lock)
+            self._locks.release_lock(lock_id)
             self._session.commit()
 
         return UploadResult(
@@ -255,7 +258,7 @@ class UploadService:
 
         try:
             stored = self._writer.store_version(
-                file.id, new_version, source, nodes, on_block_stored=renew_lock
+                file.id, new_version, source, nodes, on_progress=renew_lock
             )
         except Exception as error:
             self._session.rollback()

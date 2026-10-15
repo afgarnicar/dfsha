@@ -1,0 +1,94 @@
+# Clúster de PRUEBAS de DFSha (lo usa tests/run_all.py).
+#
+# Es un clúster aparte del de desarrollo (docker-compose.yml de la raíz):
+# - otro nombre de proyecto (dfsha-test), así que sus contenedores y volúmenes
+#   no se mezclan con los del entorno de desarrollo ni con los datos de nadie;
+# - otros puertos (18000 para el ControlNode y 18001-18003 para los DataNodes);
+# - sin Nginx: las pruebas hablan directo con el ControlNode;
+# - claves fijas de prueba (no son secretos: este clúster se crea y se borra
+#   en cada corrida);
+# - bloques de 1 MB y tiempos cortos, para que las pruebas usen archivos
+#   pequeños y no tarden. run_all.py cambia algunos tiempos por suite con las
+#   variables DFSHA_TEST_*.
+#
+# No se usa en AWS ni toca el despliegue.
+
+name: dfsha-test
+
+x-datanode: &datanode
+  build: ../data_node
+  command: ["python", "run.py"]
+  volumes:
+    - ../shared:/app/shared:ro
+
+x-datanode-env: &datanode-env
+  INTERNAL_API_KEY: clave-interna-de-pruebas
+  STORAGE_ROOT: /data/dfsha
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dfsha
+      POSTGRES_PASSWORD: dfsha
+      POSTGRES_DB: dfsha
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dfsha -d dfsha"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  control_node:
+    build: ../control_node
+    # Crea las tablas y arranca el servicio.
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18000:8000"
+    volumes:
+      - ../shared:/app/shared:ro
+    environment:
+      DATABASE_URL: postgresql://dfsha:dfsha@postgres:5432/dfsha
+      JWT_SECRET: secreto-de-pruebas
+      JWT_EXPIRATION: "3600"
+      INTERNAL_API_KEY: clave-interna-de-pruebas
+      ENCRYPTION_KEY: 4XrPy8kcTmRI4uGidoM_ecj7vzet9YiKDJYqV5pTois=
+      DATANODES: DN1:data_node_1:8000,DN2:data_node_2:8000,DN3:data_node_3:8000
+      BLOCK_SIZE_MB: "1"
+      REPLICATION_FACTOR: "2"
+      MAX_RETRIES: "3"
+      MAX_PARALLEL_DOWNLOADS: "8"
+      TEMP_ROOT: /tmp/dfsha
+      TEMP_SPACE_MARGIN_PERCENT: "10"
+      HANDLE_TIMEOUT_SECONDS: "300"
+      LOCK_TIMEOUT_SECONDS: ${DFSHA_TEST_LOCK_TIMEOUT:-5}
+      HEALTH_CHECK_INTERVAL_SECONDS: ${DFSHA_TEST_HEALTH_INTERVAL:-1}
+      DATANODE_FAILURE_THRESHOLD: ${DFSHA_TEST_FAILURE_THRESHOLD:-3}
+      CLEANUP_INTERVAL_SECONDS: ${DFSHA_TEST_CLEANUP_INTERVAL:-2}
+      ORPHAN_GRACE_SECONDS: ${DFSHA_TEST_ORPHAN_GRACE:-5}
+
+  data_node_1:
+    <<: *datanode
+    ports:
+      - "18001:8000"
+    environment:
+      <<: *datanode-env
+      NODE_ID: DN1
+
+  data_node_2:
+    <<: *datanode
+    ports:
+      - "18002:8000"
+    environment:
+      <<: *datanode-env
+      NODE_ID: DN2
+
+  data_node_3:
+    <<: *datanode
+    ports:
+      - "18003:8000"
+    environment:
+      <<: *datanode-env
+      NODE_ID: DN3

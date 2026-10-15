@@ -65,6 +65,7 @@ class BlockWriter:
         # Un intento por llamada: los reintentos los maneja este servicio,
         # cambiando de nodo entre intentos.
         self._block_client = BlockClient(max_retries=1)
+        self._on_progress: Callable[[], None] | None = None
 
     def eligible_nodes(self) -> list[EligibleNode]:
         """DataNodes registrados, como candidatos para colocar bloques."""
@@ -88,22 +89,33 @@ class BlockWriter:
         version: int,
         source: BinaryIO,
         nodes: list[EligibleNode],
-        on_block_stored: Callable[[], None] | None = None,
+        on_progress: Callable[[], None] | None = None,
     ) -> StoredVersion:
         """Lee ``source`` por bloques y guarda cada uno con PRIMARY y BACKUP.
 
-        ``on_block_stored`` se llama después de cada bloque (el write lo usa
-        para renovar su lock en escrituras largas).
+        ``on_progress`` se llama antes de cada intento de enviar una réplica y
+        después de cada bloque. El write y el PUT con sobrescritura lo usan para
+        renovar su lock: un DataNode caído puede tardar varios segundos en
+        responder (hasta el timeout de conexión) y el lock no debe vencerse
+        mientras tanto, porque la limpieza borraría la versión que se está
+        escribiendo.
         """
-        total = 0
-        index = 0
-        while chunk := source.read(self._block_size):
-            self._store_block(file_id, version, index, chunk, nodes)
-            total += len(chunk)
-            index += 1
-            if on_block_stored is not None:
-                on_block_stored()
-        return StoredVersion(size_bytes=total, block_count=index)
+        self._on_progress = on_progress
+        try:
+            total = 0
+            index = 0
+            while chunk := source.read(self._block_size):
+                self._store_block(file_id, version, index, chunk, nodes)
+                total += len(chunk)
+                index += 1
+                self._progress()
+            return StoredVersion(size_bytes=total, block_count=index)
+        finally:
+            self._on_progress = None
+
+    def _progress(self) -> None:
+        if self._on_progress is not None:
+            self._on_progress()
 
     def _store_block(
         self, file_id: int, version: int, index: int, chunk: bytes, nodes: list[EligibleNode]
@@ -159,6 +171,7 @@ class BlockWriter:
         ]
         errors: list[str] = []
         for datanode_id in islice(cycle(candidates), self._max_retries):
+            self._progress()
             node = self._datanodes.get_by_id(datanode_id)
             try:
                 self._block_client.send_block(

@@ -176,7 +176,7 @@ class WriteService:
                 # Cada bloque guardado renueva el lock: un write largo no lo pierde.
                 stored = self._writer.store_version(
                     file.id, new_version, source, nodes,
-                    on_block_stored=lambda: self._handles.touch(valid),
+                    on_progress=lambda: self._handles.touch(valid),
                 )
             block_count = stored.block_count
         except Exception as error:

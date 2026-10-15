@@ -83,6 +83,9 @@ class HandleService:
             )
         else:
             self._access.require_file_permission(user, file, Action.WRITE)
+            # Primero el candado del archivo y después el handle: así dos open
+            # WRITE simultáneos se ordenan en vez de bloquearse mutuamente.
+            self._locks.lock_file_row(file)
             handle = self._handles.create(token, file.id, user.id, mode, utcnow())
             try:
                 lock = self._locks.acquire(file, user.id, handle.id)
