@@ -9,6 +9,7 @@ archivos. Cada bloque se cifra y se guarda dos veces (PRIMARY y BACKUP) en
 DataNodes distintos, así que el sistema sigue funcionando si un DataNode cae.
 
 - Guía de despliegue en AWS Academy (4 VMs): [`deploy/README.md`](deploy/README.md).
+- Pruebas de punta a punta: [`tests/README.md`](tests/README.md).
 - Documentación interactiva de la API: `https://<host>/docs` (Swagger de FastAPI).
 
 ---
@@ -48,7 +49,7 @@ DataNodes distintos, así que el sistema sigue funcionando si un DataNode cae.
 | Lectura (GET) | Descarga los bloques en paralelo (`MAX_PARALLEL_DOWNLOADS`), usa el BACKUP si el PRIMARY falla, valida el checksum, descifra y reconstruye en un temporal con control de espacio. |
 | Escritura | `PUT` crea; `PUT --overwrite` y `write` reemplazan el archivo completo como una **versión nueva**: solo cuando todos sus bloques están guardados con factor 2 se activa, y la vieja se borra. Si algo falla, la versión anterior queda intacta. |
 | Concurrencia | WRITE LOCK exclusivo por archivo completo, con vencimiento (`LOCK_TIMEOUT_SECONDS`) y renovación en cada escritura. |
-| Permisos | Bits rwx Unix (dueño, grupo, otros) + ACL por usuario y por grupo. Se evalúa en orden: ACL del usuario, ACL de sus grupos, dueño, grupo, otros. En directorios: r = listar, w = crear/borrar, x = atravesar. Solo el dueño cambia permisos; solo los miembros de un grupo agregan miembros. |
+| Permisos | Bits rwx Unix (dueño, grupo, otros) + ACL por usuario y por grupo. Se evalúa como en las ACL POSIX: dueño, ACL del usuario, ACL de sus grupos, grupo, otros. En directorios: r = listar, w = crear/borrar, x = atravesar. Solo el dueño cambia permisos; solo los miembros de un grupo agregan miembros. |
 | Seguridad de red | Cliente → Nginx por HTTPS. ControlNode ↔ DataNodes y DataNode ↔ DataNode por HTTPS con un certificado derivado de `INTERNAL_API_KEY`, más la cabecera `X-DFSHA-API-Key`. |
 
 ## Estructura del repositorio
@@ -60,6 +61,7 @@ data_node/         DataNode: app/api, app/storage, app/services y run.py (arranq
 shared/            Constantes, enums y certificado interno (internal_tls.py)
 nginx/             nginx.conf y certificado autofirmado de pruebas
 deploy/            Despliegue en AWS (docker-compose por tipo de VM, scripts y guía)
+tests/             Pruebas de punta a punta contra un clúster de pruebas en Docker
 docker-compose.yml Entorno local completo: Postgres + ControlNode + 3 DataNodes + Nginx
 ```
 
@@ -175,6 +177,22 @@ Todas las rutas (salvo `/health`, `/auth/register`, `/auth/login` y
 Los DataNodes exponen `POST /blocks`, `GET /blocks`, `GET /blocks/{id}`,
 `DELETE /blocks/{id}`, `POST /blocks/{id}/replicate` y `GET /health`; todos
 (salvo `/health`) exigen la cabecera `X-DFSHA-API-Key`.
+
+## Pruebas
+
+Las pruebas levantan un clúster de pruebas aislado en Docker (proyecto
+`dfsha-test`, puertos 18000 a 18003) y prueban el sistema a través de su API.
+Con Docker Desktop abierto, desde la raíz del repositorio:
+
+```powershell
+python -m pip install -r tests/requirements.txt
+python tests/run_all.py
+```
+
+Son 7 suites: GET y rm, sesiones y WRITE LOCK, overwrite, PUT con fallas,
+permisos, redundancia y CLI, y re-replicación. El detalle está en
+[`tests/README.md`](tests/README.md). La prueba del despliegue en AWS es
+`deploy/prueba-despliegue.sh`.
 
 ## Configuración
 

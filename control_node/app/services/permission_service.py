@@ -1,11 +1,14 @@
 """Servicio de autorización.
 
 Decide si un usuario puede ejecutar una acción (leer, escribir, atravesar)
-sobre un recurso protegido. Sigue el orden de resolución de la especificación:
+sobre un recurso protegido. Sigue el orden de las ACL POSIX:
 
-    1. Si existe una ACL específica para el usuario, se usa.
-    2. Si no, pero existe una ACL para alguno de sus grupos, se usa.
-    3. Si no hay ACL, se aplica el modo Unix: propietario, luego grupo, luego otros.
+    1. El propietario siempre usa sus bits de propietario (una ACL de un grupo
+       al que él mismo pertenece no puede dejarlo sin acceso a lo suyo).
+    2. Si existe una ACL específica para el usuario, se usa.
+    3. Si no, pero existe una ACL para alguno de sus grupos, se usa (basta con
+       que una lo permita).
+    4. Si no hay ACL, se aplica el modo Unix: grupo del recurso, luego otros.
 
 El servicio no depende de los modelos concretos (directorios o archivos): recibe
 una abstracción ``ProtectedResource`` para poder autorizar cualquier recurso.
@@ -45,16 +48,20 @@ class PermissionService:
 
     def can(self, user: User, resource: ProtectedResource, action: Action) -> bool:
         """Indica si el usuario puede ejecutar la acción sobre el recurso."""
+        # 1. El propietario usa sus bits de propietario, como en las ACL POSIX.
+        if resource.owner_id == user.id:
+            return has_permission(resource.permissions, Scope.OWNER, action)
+
         user_group_ids = self._groups.list_group_ids_for_user(user.id)
 
-        # 1. ACL específica del usuario (tiene prioridad sobre todo lo demás).
+        # 2. ACL específica del usuario.
         user_acl = self._acl.find_for_subject(
             resource.resource_type, resource.resource_id, SUBJECT_USER, user.id
         )
         if user_acl is not None:
             return self._acl_allows(user_acl, action)
 
-        # 2. ACL de los grupos del usuario. Si pertenece a varios grupos con
+        # 3. ACL de los grupos del usuario. Si pertenece a varios grupos con
         #    ACL sobre el recurso, basta con que uno de ellos lo permita (así el
         #    resultado no depende del orden en que se lean los grupos).
         group_acls = [
@@ -70,10 +77,7 @@ class PermissionService:
         if group_acls:
             return any(self._acl_allows(entry, action) for entry in group_acls)
 
-        # 3. Modo Unix: propietario -> grupo -> otros.
-        if resource.owner_id == user.id:
-            return has_permission(resource.permissions, Scope.OWNER, action)
-
+        # 4. Modo Unix: grupo del recurso -> otros.
         if resource.group_id is not None and resource.group_id in user_group_ids:
             return has_permission(resource.permissions, Scope.GROUP, action)
 

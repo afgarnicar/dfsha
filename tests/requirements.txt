@@ -1,0 +1,3 @@
+# Dependencias para correr las pruebas (incluye las del cliente CLI, que se prueba en la suite 6).
+-r ../client/requirements.txt
+httpx==0.27.2
