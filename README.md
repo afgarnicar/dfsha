@@ -234,3 +234,7 @@ Un proceso periódico del ControlNode (`CleanupWorker`):
 - El ControlNode y su PostgreSQL son un único punto de coordinación (no están
   replicados); la alta disponibilidad es de los datos (DataNodes).
 - El certificado de Nginx es autofirmado: el cliente no lo verifica.
+
+## Informe técnico
+
+El informe del proyecto está en [docs/DFSha-Informe-tecnico.pdf](docs/DFSha-Informe-tecnico.pdf).
